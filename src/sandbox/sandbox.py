@@ -7,11 +7,16 @@ from rich import print
 
 class Sandbox:
 
-    def __init__(self, image: str = "agent_sandbox:latest") -> None:
+    def __init__(
+        self, task_file: str = "task.json",
+        image: str = "agent_sandbox:latest"
+    ) -> None:
         self.image = image
         self.client = docker.from_env()
         self.container: Any = None
+        self.task_file = task_file
 
+    # Docker
     def build(self, path: str = ".") -> None:
         dockerfile_path = os.path.join(path, "Dockerfile")
         if not os.path.exists(dockerfile_path):

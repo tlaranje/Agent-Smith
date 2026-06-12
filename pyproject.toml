@@ -15,8 +15,19 @@ dependencies = [
     "fire"
 ]
 
+[dependency-groups]
+dev = [
+    "types-requests",
+    "types-setuptools",
+    "types-docopt",
+]
+
 [project.scripts]
 sandbox = "src.__main__:main"
 
 [tool.uv]
 package = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
