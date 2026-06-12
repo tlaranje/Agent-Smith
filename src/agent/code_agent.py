@@ -20,7 +20,10 @@ class CodeAgent:
             if result.final_answer:
                 return result.final_answer
             observations = result.output
-        return f"Could not generate the requested code within {self.max_iterations} iterations."
+        return (
+            "Could not generate the requested "
+            f"code within {self.max_iterations} iterations."
+        )
 
     @staticmethod
     def build_prompt(task: BaseModel, observations: str) -> str:

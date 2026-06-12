@@ -1,0 +1,22 @@
+[project]
+name = "Agent-Smith"
+version = "0.0.1"
+description = "Code generator agent."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "flake8",
+    "mypy",
+    "pydantic",
+    "rich",
+    "google-genai",
+    "docker",
+    "types-docker",
+    "fire"
+]
+
+[project.scripts]
+sandbox = "src.__main__:main"
+
+[tool.uv]
+package = true
