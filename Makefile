@@ -19,6 +19,7 @@ clean:
 	@$(FIND) . -type f -name "*.pyc" -delete
 	@$(FIND) . -type f -name "*.pyo" -delete
 	@$(RM) .venv
+	@$(RM) Agent_Smith.egg-info
 
 lint:
 	@clear && uv run flake8 src

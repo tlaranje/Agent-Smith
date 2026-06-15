@@ -1,5 +1,4 @@
 from pydantic import BaseModel, Field
-import inspect
 import ast
 
 
@@ -27,8 +26,6 @@ class SandboxConfig(BaseModel):
     max_memory_mb: int = 512
 
     def validate_imports(self, code: str = "") -> bool:
-        code = inspect.cleandoc(code)
-
         if not code.strip():
             return True
         try:
@@ -62,8 +59,6 @@ class SandboxConfig(BaseModel):
         return True
 
     def validate_paths(self, code: str = "") -> bool:
-        code = inspect.cleandoc(code)
-
         if not code.strip():
             return True
 

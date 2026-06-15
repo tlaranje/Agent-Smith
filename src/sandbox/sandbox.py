@@ -17,6 +17,7 @@ class Sandbox:
         self.task_file = task_file
 
     def execute(self, code: str) -> None:
+        # print(SandboxConfig().validate_code(code))
         if not SandboxConfig().validate_code(code):
             return
 
@@ -24,7 +25,8 @@ class Sandbox:
             f.write(code)
 
         res = self.container.exec_run("python3 /sandbox/code.py")
-        print(f"\n{res.output.decode("utf-8")}")
+        if res.output != b'':
+            print(f"\n{res.output.decode("utf-8")}")
 
     # Docker
     def build(self, path: str = ".") -> None:

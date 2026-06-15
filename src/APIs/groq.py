@@ -6,9 +6,7 @@ import os
 class GroqAPI:
     def __init__(self) -> None:
         load_dotenv()
-        self.client = Groq(
-            api_key=os.getenv("GEMINI_API_KEY_1")
-        )
+        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
     def generate(self, prompt: str) -> str | None:
         chat_completion = self.client.chat.completions.create(
