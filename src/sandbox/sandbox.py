@@ -6,7 +6,6 @@ from rich import print
 
 
 class Sandbox:
-
     def __init__(
         self, task_file: str = "task.json",
         image: str = "agent_sandbox:latest"
@@ -15,6 +14,9 @@ class Sandbox:
         self.client = docker.from_env()
         self.container: Any = None
         self.task_file = task_file
+
+    def execute(self, code: str) -> None:
+        pass
 
     # Docker
     def build(self, path: str = ".") -> None:

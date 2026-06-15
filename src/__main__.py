@@ -1,3 +1,5 @@
+from src.sandbox import SandboxConfig
+from src.parser import MBPPTaskInput
 from src.sandbox import Sandbox
 from rich import print
 import traceback
@@ -21,14 +23,13 @@ class Main:
 
     def enter(self) -> None:
         self.sandbox.start()
-
         self.sandbox.enter()
 
     def stop(self) -> None:
         self.sandbox.stop()
 
 
-def main() -> None:
+""" def main() -> None:
     try:
         args = sys.argv[1:]
         task_file = (
@@ -43,6 +44,14 @@ def main() -> None:
             m.sandbox.stop()
         else:
             fire.Fire(m)
+    except (Exception, docker.errors.BuildError) as e:
+        traceback.print_exc()
+        print(f"[bold red]{e}[/bold red]") """
+
+
+def main() -> None:
+    try:
+
     except (Exception, docker.errors.BuildError) as e:
         traceback.print_exc()
         print(f"[bold red]{e}[/bold red]")

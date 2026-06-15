@@ -31,3 +31,7 @@ package = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+[[tool.mypy.overrides]]
+module = "fire"
+ignore_missing_imports = true
