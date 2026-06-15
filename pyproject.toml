@@ -12,7 +12,9 @@ dependencies = [
     "google-genai",
     "docker",
     "types-docker",
-    "fire"
+    "fire",
+    "dotenv",
+    "groq"
 ]
 
 [dependency-groups]

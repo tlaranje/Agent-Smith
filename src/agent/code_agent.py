@@ -1,24 +1,34 @@
+from src.APIs import GeminiAPI, GroqAPI
 from pydantic import BaseModel
+from typing import Any
 
 
 class CodeAgent:
-    def __init__(self, llm, sandbox, max_iterations: int = 10) -> None:
-        self.llm = llm
+    def __init__(self, sandbox, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
         self.max_iterations: int = max_iterations
+        self.llms: list[Any] = [GeminiAPI(), GroqAPI()]
+        self.llm: Any
+
+    def chose_llm(self) -> None:
+        self.llm = self.llms[0]
 
     def give_task(self, task: BaseModel) -> str:
+        self.chose_llm()
+
         observations: str = ""
         for _ in range(self.max_iterations):
             prompt: str = self.build_prompt(
                 task=task, observations=observations
             )
-            llm_response: str = self.llm.generate(prompt)
+            try:
+                llm_response: str = self.llm.generate(prompt)
+            except Exception:
+                self.chose_llm()
+
             print(llm_response)
             code: str = self.extract_code(llm_response)
             result = self.sandbox.execute(code)
-            if result.final_answer:
-                return result.final_answer
             observations = result.output
         return (
             "Could not generate the requested "

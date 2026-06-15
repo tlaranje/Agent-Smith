@@ -1,8 +1,9 @@
+from .sandbox_config import SandboxConfig
+from typing import Any
+from rich import print
+import docker
 import io
 import os
-from typing import Any
-import docker
-from rich import print
 
 
 class Sandbox:
@@ -16,7 +17,14 @@ class Sandbox:
         self.task_file = task_file
 
     def execute(self, code: str) -> None:
-        pass
+        if not SandboxConfig().validate_code(code):
+            return
+
+        with open("data/docker/code.py", "w", encoding="utf-8") as f:
+            f.write(code)
+
+        res = self.container.exec_run("python3 /sandbox/code.py")
+        print(f"\n{res.output.decode("utf-8")}")
 
     # Docker
     def build(self, path: str = ".") -> None:
@@ -79,7 +87,11 @@ class Sandbox:
                     self.image,
                     command="tail -f /dev/null",
                     detach=True,
-                    remove=True
+                    remove=True,
+                    volumes={os.path.join(os.getcwd(), "data/docker"): {
+                        "bind": "/sandbox",
+                        "mode": "rw"
+                    }}
                 )
                 c_id = self.container.short_id
                 print(
