@@ -23,6 +23,7 @@ def main() -> None:
         sandbox.build()
         sandbox.start()
         print(f"[green]{agent.give_task(task)}[green]")
+        # agent.give_task(task)
         sandbox.stop()
     except (Exception, docker.errors.BuildError) as e:
         traceback.print_exc()

@@ -16,14 +16,23 @@ class Sandbox:
         self.container: Any = None
         self.task_file = task_file
 
-    def execute(self, code: str) -> tuple[str, bool]:
+    def execute(
+        self, code: str, test_list: list[str] | None = None
+    ) -> tuple[str, bool]:
         if not SandboxConfig().validate_code(code):
-            return "", False
+            return "Código bloqueado por validação de segurança (AST).", False
+
+        self.container.exec_run("rm -f /tmp/agent/final_result.py")
 
         with open("data/docker/setup.py", "r") as f:
             setup = f.read()
 
         full_code = setup + "\n" + code
+
+        if test_list:
+            full_code += "\n\n# --- AUTOMATED TESTS ---\n"
+            for test in test_list:
+                full_code += f"{test}\n"
 
         with open("data/docker/code.py", "w", encoding="utf-8") as f:
             f.write(full_code)
@@ -31,10 +40,18 @@ class Sandbox:
         res = self.container.exec_run("python3 /sandbox/code.py")
         output = res.output.decode("utf-8")
 
+        if res.exit_code != 0:
+            print(
+                "[bold red][!] The execution failed or failed "
+                "in a test assert:[/bold red]"
+            )
+            print(f"[red]{output.strip()}[/red]")
+            return output, False
+
         check = self.container.exec_run("python3 /tmp/agent/final_result.py")
 
         if check.exit_code == 0:
-            self.container.exec_run("rm /tmp/agent/final_result.py")
+            self.container.exec_run("rm -f /tmp/agent/final_result.py")
             return code, True
 
         return output, False

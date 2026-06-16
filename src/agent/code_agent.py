@@ -5,31 +5,26 @@ from rich import print
 import re
 
 SYSTEM_PROMPT = """
-You are a coding agent solving Python programming tasks.
+You are an expert Python coding agent executing code in a secure sandbox.
 
-You operate in a loop: each iteration you write Python code that gets
-executed inside a secure sandbox.
-You can see the stdout/stderr or exceptions of your code in the next
-iteration as observations.
+CRITICAL FORMAT RULES:
+1. Every response MUST contain exactly ONE Python code block enclosed
+in triple backticks (```python ... ```).
+2. Inside this single code block, you MUST first define the requested
+function, and immediately after, call the `final_answer` function.
+3. The argument passed to `final_answer` MUST be a valid Python STRING
+literal (enclosed in quotes or triple quotes) containing your clean function
+definition. Do NOT pass the raw function name.
 
-## Objectives
-1. Read the task description and function signature.
-2. Write the implementation alongside a test runner execution if you
-want to verify it.
-3. Once your code passes the required test cases (or you verify it works),
-you MUST submit using:
-   final_answer("your complete clean function code here")
-
-## Formatting Rules
-Always respond strictly with Python code wrapped inside a markdown code block:
+EXACT EXAMPLE FORMAT TO FOLLOW:
 ```python
-# You can write helper logic, run prints, or execute the required assert
-# statements here to test.
-def your_function():
-    ...
+def extract_rear(test_tuple):
+    # Your implementation here
+    return [s[-1] for s in test_tuple]
 
-# If tests pass, call this to finish the task:
-final_answer("def your_function():\\n    ...")
+# Correct invocation passing a STRING literal containing the code:
+final_answer(\"\"\"def extract_rear(test_tuple):
+    return [s[-1] for s in test_tuple]\"\"\")
 """
 
 
@@ -48,7 +43,7 @@ class CodeAgent:
         self.current_llm_index = (self.current_llm_index + 1)
         self.llm = self.llms[self.current_llm_index]
 
-    def give_task(self, task: BaseModel) -> str:
+    def give_task(self, task) -> str:
         observations: str = ""
         for i in range(self.max_iterations):
             prompt: str = self.build_prompt(
@@ -65,7 +60,7 @@ class CodeAgent:
                     self.chose_llm()
 
             code: str = self.extract_code(llm_response)
-            result, done = self.sandbox.execute(code)
+            result, done = self.sandbox.execute(code, test_list=task.test_list)
 
             if done:
                 print(f"✓ Solution found in iteration {i+1}!")
@@ -101,6 +96,6 @@ class CodeAgent:
         match = re.findall(pattern, text)
 
         if match:
-            return "\n".join(match).strip()
+            return match[-1].strip()
 
         return text.strip()
