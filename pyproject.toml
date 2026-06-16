@@ -14,7 +14,8 @@ dependencies = [
     "types-docker",
     "fire",
     "dotenv",
-    "groq"
+    "groq",
+    "cohere"
 ]
 
 [dependency-groups]

@@ -4,5 +4,6 @@ WORKDIR /sandbox
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+RUN mkdir -p /tmp/agent
 
 CMD ["bash"]

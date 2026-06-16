@@ -1,6 +1,6 @@
 {
   "task_id": 420,
-  "task_definition": "create a function to return the current hour, day, month and year",
+  "task_definition": "Create snake game with only built in packages.",
   "function_definition": "",
   "test_imports": [],
   "test_list": []

@@ -16,17 +16,28 @@ class Sandbox:
         self.container: Any = None
         self.task_file = task_file
 
-    def execute(self, code: str) -> None:
-        # print(SandboxConfig().validate_code(code))
+    def execute(self, code: str) -> tuple[str, bool]:
         if not SandboxConfig().validate_code(code):
-            return
+            return "", False
+
+        with open("data/docker/setup.py", "r") as f:
+            setup = f.read()
+
+        full_code = setup + "\n" + code
 
         with open("data/docker/code.py", "w", encoding="utf-8") as f:
-            f.write(code)
+            f.write(full_code)
 
         res = self.container.exec_run("python3 /sandbox/code.py")
-        if res.output != b'':
-            print(f"\n{res.output.decode("utf-8")}")
+        output = res.output.decode("utf-8")
+
+        check = self.container.exec_run("python3 /tmp/agent/final_result.py")
+
+        if check.exit_code == 0:
+            self.container.exec_run("rm /tmp/agent/final_result.py")
+            return code, True
+
+        return output, False
 
     # Docker
     def build(self, path: str = ".") -> None:
