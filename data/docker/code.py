@@ -5,18 +5,32 @@ def final_answer(answer_string: str):
 
 from datetime import datetime
 
-def get_current_date():
+def get_current_date_time():
+    """
+    Returns the current hour, day, month, and year.
+    
+    Returns:
+        dict: A dictionary containing the current hour, day, month, and year.
+    """
     now = datetime.now()
-    return (now.hour, now.day, now.month, now.year)
+    return {
+        "hour": now.hour,
+        "day": now.day,
+        "month": now.month,
+        "year": now.year
+    }
 
-current_datetime = get_current_date
-now = get_current_date
+# Test the function
+def test_get_current_date_time():
+    current_date_time = get_current_date_time()
+    assert "hour" in current_date_time
+    assert "day" in current_date_time
+    assert "month" in current_date_time
+    assert "year" in current_date_time
 
-final_answer("""from datetime import datetime
+# Run the test
+test_get_current_date_time()
+print("Test passed")
 
-def get_current_date():
-    now = datetime.now()
-    return (now.hour, now.day, now.month, now.year)
-
-current_datetime = get_current_date
-now = get_current_date""")
+# If tests pass, call this to finish the task:
+final_answer("def get_current_date_time():\n    now = datetime.now()\n    return {\n        \"hour\": now.hour,\n        \"day\": now.day,\n        \"month\": now.month,\n        \"year\": now.year\n    }")

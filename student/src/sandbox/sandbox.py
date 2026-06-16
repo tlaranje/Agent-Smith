@@ -20,12 +20,12 @@ class Sandbox:
         if not SandboxConfig().validate_code(code):
             return "", False
 
-        with open("data/docker/setup.py", "r") as f:
+        with open("../data/docker/setup.py", "r") as f:
             setup = f.read()
 
         full_code = setup + "\n" + code
 
-        with open("data/docker/code.py", "w", encoding="utf-8") as f:
+        with open("../data/docker/code.py", "w", encoding="utf-8") as f:
             f.write(full_code)
 
         res = self.container.exec_run("python3 /sandbox/code.py")
@@ -101,7 +101,7 @@ class Sandbox:
                     command="tail -f /dev/null",
                     detach=True,
                     remove=True,
-                    volumes={os.path.join(os.getcwd(), "data/docker"): {
+                    volumes={os.path.join(os.getcwd(), "../data/docker"): {
                         "bind": "/sandbox",
                         "mode": "rw"
                     }}

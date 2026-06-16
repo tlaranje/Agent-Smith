@@ -34,10 +34,10 @@ final_answer("def your_function():\\n    ...")
 
 
 class CodeAgent:
-    def __init__(self, sandbox, max_iterations: int = 10) -> None:
+    def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
         self.max_iterations: int = max_iterations
-        self.llms: list[Any] = [GroqAPI(), GeminiAPI(), CohereAPI()]
+        self.llms: list[Any] = llms
         self.llm: Any = self.llms[0]
         self.current_llm_index: int = 0
 
