@@ -35,7 +35,7 @@ class Sandbox:
 
         if check.exit_code == 0:
             self.container.exec_run("rm /tmp/agent/final_result.py")
-            return code, True
+            return output, True
 
         return output, False
 

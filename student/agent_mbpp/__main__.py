@@ -1,5 +1,5 @@
 import argparse
-import json
+from pathlib import Path
 from typing import Any
 from src.agent import CodeAgent
 from src.parser import MBPPTaskInput
@@ -38,7 +38,7 @@ def main() -> None:
         "--task-file", default="../data/input/task.json"
     )
     parser.add_argument(
-        "--output", default="../data/output/"
+        "--output", default="../data/output/task_solution.json"
     )
     parser.add_argument(
         "--model-name", default="gemini"
@@ -57,8 +57,10 @@ def main() -> None:
         get_llms(args.model_name), sandbox
     )
     solution = agent.give_task(task)
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w") as fd:
-        ...
+        fd.write(solution.model_dump_json(indent=4))
     sandbox.stop()
 
 

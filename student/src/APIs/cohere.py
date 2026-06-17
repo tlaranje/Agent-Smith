@@ -8,22 +8,34 @@ class CohereAPI:
     def __init__(self) -> None:
         load_dotenv()
         self.client = cohere.ClientV2(os.getenv("COHERE_API_KEY"))
+        self.api_url: str = ""
+        self.model_name = "command-a-plus-05-2026"
 
-    def generate(self, prompt: str) -> str | None:
-        messages: list[Any] = [
-            {"role": "user", "content": prompt}
+    def generate(self, prompt: str):
+        from . import LLMResponse
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+            }
         ]
-        chat_completion = self.client.chat(
-            model="command-a-plus-05-2026",
+
+        response = self.client.chat(
+            model=self.model_name,
             messages=messages
         )
 
-        assert chat_completion.message.content is not None
-
         texts = [
             item.text
-            for item in chat_completion.message.content
+            for item in response.message.content
             if hasattr(item, "text")
         ]
 
-        return "\n".join(texts)
+        content = "\n".join(texts)
+
+        return LLMResponse(
+            content=content,
+            input_tokens=response.usage.tokens.input_tokens,
+            output_tokens=response.usage.tokens.output_tokens,
+            model_name=self.model_name
+        )

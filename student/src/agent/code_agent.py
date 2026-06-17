@@ -1,7 +1,10 @@
 from src.APIs import GeminiAPI, GroqAPI, CohereAPI
-from pydantic import BaseModel
-from typing import Any
+from pydantic import BaseModel, Field
+from typing import Any, Optional, List
 from rich import print
+from datetime import datetime
+import time
+
 import re
 
 SYSTEM_PROMPT = """
@@ -33,6 +36,39 @@ final_answer("def your_function():\\n    ...")
 """
 
 
+class StepMetrics(BaseModel):
+    """Metrics for a single agent step."""
+    step: int
+    input_tokens: int
+    output_tokens: int
+    request_time_ms: float
+    api_url: str
+    model_name: str
+    llm_output: str
+    sandbox_input: str
+    sandbox_output: str
+    retries: int
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class SolutionOutput(BaseModel):
+    """Output from student solution - this is what students must
+    produce."""
+    task_id: str
+    benchmark: str  # "mbpp" or "swebench"
+    success: bool
+    solution: str  # Code for MBPP, patch for SWE-bench
+    system_prompt: str
+    iterations: int
+    total_requests: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_time_seconds: float
+    steps: List["StepMetrics"] = Field(default_factory=list)
+    error: Optional[str] = None
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
 class CodeAgent:
     def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
@@ -48,33 +84,94 @@ class CodeAgent:
         self.current_llm_index = (self.current_llm_index + 1)
         self.llm = self.llms[self.current_llm_index]
 
-    def give_task(self, task: BaseModel) -> str:
-        observations: str = ""
-        for i in range(self.max_iterations):
-            prompt: str = self.build_prompt(
-                task=task, observations=observations
+    def give_task(self, task: BaseModel) -> SolutionOutput:
+        start_time = time.time()
+
+        observations = ""
+        steps: list[StepMetrics] = []
+
+        total_requests = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+
+        for iteration in range(self.max_iterations):
+
+            prompt = self.build_prompt(
+                task=task,
+                observations=observations
             )
+
+            retries = 0
+
             while True:
                 try:
-                    llm_response: str = self.llm.generate(prompt)
-                    print(f"=== Iteration {i+1} ===")
-                    # print(llm_response)
-                    # print("=" * 40)
+                    request_start = time.time()
+
+                    response = self.llm.generate(prompt)
+
+                    request_time_ms = (
+                        time.time() - request_start
+                    ) * 1000
+
+                    total_requests += 1
                     break
+
                 except Exception:
+                    retries += 1
                     self.chose_llm()
 
-            code: str = self.extract_code(llm_response)
-            result, done = self.sandbox.execute(code)
+            code = self.extract_code(response.content)
+
+            sandbox_output, done = self.sandbox.execute(code)
+
+            step = StepMetrics(
+                step=iteration + 1,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                request_time_ms=request_time_ms,
+                api_url=self.llm.api_url,
+                model_name=self.llm.model_name,
+                llm_output=response.content,
+                sandbox_input=code,
+                sandbox_output=sandbox_output,
+                retries=retries,
+            )
+
+            steps.append(step)
+
+            total_input_tokens += response.input_tokens
+            total_output_tokens += response.output_tokens
 
             if done:
-                print(f"✓ Solution found in iteration {i+1}!")
-                return result
+                return SolutionOutput(
+                    task_id=str(task.task_id),
+                    benchmark="mbpp",
+                    success=True,
+                    solution=sandbox_output,
+                    system_prompt=SYSTEM_PROMPT,
+                    iterations=iteration + 1,
+                    total_requests=total_requests,
+                    total_input_tokens=total_input_tokens,
+                    total_output_tokens=total_output_tokens,
+                    total_time_seconds=time.time() - start_time,
+                    steps=steps,
+                )
 
-            observations = result
-        return (
-            "Could not generate the requested "
-            f"code within {self.max_iterations} iterations."
+            observations = sandbox_output
+
+        return SolutionOutput(
+            task_id=str(task.task_id),
+            benchmark="mbpp",
+            success=False,
+            solution="",
+            system_prompt=SYSTEM_PROMPT,
+            iterations=self.max_iterations,
+            total_requests=total_requests,
+            total_input_tokens=total_input_tokens,
+            total_output_tokens=total_output_tokens,
+            total_time_seconds=time.time() - start_time,
+            steps=steps,
+            error="Maximum iterations reached",
         )
 
     @staticmethod
