@@ -3,16 +3,13 @@ def final_answer(answer_string: str):
     with open("/tmp/agent/final_result.py", "w", encoding="utf-8") as f:
         f.write(answer_string)
 
-from datetime import datetime
+import datetime
 
-def get_current_date_time():
+def get_current_datetime_components():
     """
     Returns the current hour, day, month, and year.
-    
-    Returns:
-        dict: A dictionary containing the current hour, day, month, and year.
     """
-    now = datetime.now()
+    now = datetime.datetime.now()
     return {
         "hour": now.hour,
         "day": now.day,
@@ -20,17 +17,47 @@ def get_current_date_time():
         "year": now.year
     }
 
-# Test the function
-def test_get_current_date_time():
-    current_date_time = get_current_date_time()
-    assert "hour" in current_date_time
-    assert "day" in current_date_time
-    assert "month" in current_date_time
-    assert "year" in current_date_time
+# Example of how to test:
+current_time_info = get_current_datetime_components()
+print(current_time_info)
 
-# Run the test
-test_get_current_date_time()
-print("Test passed")
+# Basic assertions to check if the types are correct and values are plausible
+assert isinstance(current_time_info["hour"], int)
+assert isinstance(current_time_info["day"], int)
+assert isinstance(current_time_info["month"], int)
+assert isinstance(current_time_info["year"], int)
 
-# If tests pass, call this to finish the task:
-final_answer("def get_current_date_time():\n    now = datetime.now()\n    return {\n        \"hour\": now.hour,\n        \"day\": now.day,\n        \"month\": now.month,\n        \"year\": now.year\n    }")
+assert 0 <= current_time_info["hour"] < 24
+assert 1 <= current_time_info["day"] <= 31
+assert 1 <= current_time_info["month"] <= 12
+assert current_time_info["year"] > 1970 # A reasonable lower bound for the year
+
+import datetime
+
+def get_current_datetime_components():
+    """
+    Returns the current hour, day, month, and year.
+    """
+    now = datetime.datetime.now()
+    return {
+        "hour": now.hour,
+        "day": now.day,
+        "month": now.month,
+        "year": now.year
+    }
+
+final_answer("""
+import datetime
+
+def get_current_datetime_components():
+    \"\"\"
+    Returns the current hour, day, month, and year.
+    \"\"\"
+    now = datetime.datetime.now()
+    return {
+        "hour": now.hour,
+        "day": now.day,
+        "month": now.month,
+        "year": now.year
+    }
+""")
