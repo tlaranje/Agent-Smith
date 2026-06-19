@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 Agent_Smith.egg-info
 uv.lock
+.community.db

@@ -1,6 +1,7 @@
 from src.parser import MBPPTaskInput
 from src.sandbox import Sandbox
 from src.agent import CodeAgent
+# from src.mcp import MCPServer
 from rich import print
 import traceback
 import docker
@@ -30,14 +31,6 @@ def main() -> None:
         print(f"[bold red]{e}[/bold red]")
 
 
-""" def main() -> None:
-    try:
-        mbp = MBPPTaskInput()
-        print(mbp.from_file("data/input/task.json"))
-    except (Exception, docker.errors.BuildError) as e:
-        traceback.print_exc()
-        print(f"[bold red]{e}[/bold red]") """
-
-
 if __name__ == "__main__":
+    # MCPServer().mcp.run()
     main()

@@ -8,8 +8,8 @@ import os
 
 class Sandbox:
     def __init__(
-        self, task_file: str = "task.json",
-        image: str = "agent_sandbox:latest"
+       self, task_file: str = "task.json",
+       image: str = "agent_sandbox:latest"
     ) -> None:
         self.image = image
         self.client = docker.from_env()

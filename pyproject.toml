@@ -15,7 +15,9 @@ dependencies = [
     "fire",
     "dotenv",
     "groq",
-    "cohere"
+    "cohere",
+    "mcp",
+    "fastmcp>=3.4.2",
 ]
 
 [dependency-groups]
