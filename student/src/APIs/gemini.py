@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 from google import genai
-from types import Any
+from typing import Any
 import os
 
 

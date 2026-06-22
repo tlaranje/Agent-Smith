@@ -438,6 +438,7 @@ class SWEBenchAgent:
         ]
 
         self.sandbox.start()
+        self.sandbox.enter()
 
         try:
             for iteration in range(self.max_iterations):
