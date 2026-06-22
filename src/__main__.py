@@ -1,7 +1,6 @@
 from src.parser import MBPPTaskInput
 from src.sandbox import Sandbox
 from src.agent import CodeAgent
-# from src.mcp import MCPServer
 from rich import print
 import traceback
 import docker
@@ -23,14 +22,13 @@ def main() -> None:
 
         sandbox.build()
         sandbox.start()
-        print(f"[green]{agent.give_task(task)}[green]")
-        # agent.give_task(task)
+        # print(f"[green]{agent.give_task(task)}[green]")
+        agent.give_task(task)
         sandbox.stop()
     except (Exception, docker.errors.BuildError) as e:
         traceback.print_exc()
-        print(f"[bold red]{e}[/bold red]")
+        print(f"[bold red]{e}[/bold red]", file=sys.stderr)
 
 
 if __name__ == "__main__":
-    # MCPServer().mcp.run()
     main()

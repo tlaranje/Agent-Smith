@@ -52,7 +52,7 @@ class CodeAgent:
             while True:
                 try:
                     llm_response: str = self.llm.generate(prompt)
-                    print(f"=== Iteration {i+1} ===")
+                    # print(f"=== Iteration {i+1} ===")
                     # print(llm_response)
                     # print("=" * 40)
                     break
@@ -63,7 +63,7 @@ class CodeAgent:
             result, done = self.sandbox.execute(code, test_list=task.test_list)
 
             if done:
-                print(f"✓ Solution found in iteration {i+1}!")
+                # print(f"✓ Solution found in iteration {i+1}!")
                 return result
 
             observations = result
