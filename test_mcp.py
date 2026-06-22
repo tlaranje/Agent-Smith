@@ -31,18 +31,7 @@ async def main():
 
             print("\n--- Testing 'run_tests' ---")
 
-            code_sample = """
-            import os
-
-            # O teu código principal
-            def minha_funcao():
-                return True
-
-            # Simulando o que o teu agente/setup precisa para validar o sucesso
-            os.makedirs("/tmp/agent", exist_ok=True)
-            with open("/tmp/agent/final_result.py", "w") as f:
-                f.write("# Sucesso")
-            """
+            code_sample = """def minha_funcao():\n    return True\n"""
 
             test_result = await session.call_tool(
                 "run_tests", arguments={"code": code_sample}

@@ -2,6 +2,7 @@ from .sandbox_config import SandboxConfig
 from typing import Any
 from rich import print
 import docker
+import sys
 import io
 import os
 
@@ -19,8 +20,12 @@ class Sandbox:
     def execute(
         self, code: str, test_list: list[str] | None = None
     ) -> tuple[str, bool]:
-        if not SandboxConfig().validate_code(code):
-            return "Código bloqueado por validação de segurança (AST).", False
+        try:
+            SandboxConfig().validate_code(code)
+        except Exception as e:
+            return (
+                f"[bold red]{e}[/bold red]", False
+            )
 
         self.container.exec_run("rm -f /tmp/agent/final_result.py")
 
@@ -47,9 +52,12 @@ class Sandbox:
             # )
             # print(f"[red]{output.strip()}[/red]")
             return output, False
+        elif res.exit_code == 0:
+            return '"""\n' + code + '"""', True
 
         check = self.container.exec_run("python3 /tmp/agent/final_result.py")
-
+        # with open("tmp/agent/final_result.py", "r") as fd:
+        #     data = fd.read()
         if check.exit_code == 0:
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
             return code, True
