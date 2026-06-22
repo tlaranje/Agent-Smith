@@ -1,0 +1,630 @@
+import json
+import re
+from typing import Any, List, Optional
+from pydantic import BaseModel, Field
+from datetime import datetime
+from ..parser import SWEBenchTaskInput
+import time
+
+SYSTEM_PROMPT: str = """You are an expert software engineer tasked with fixing bugs in real open-source repositories.
+
+You operate in a loop. Each iteration you must output exactly ONE tool call as valid JSON and nothing else.
+
+The repository is available at /testbed.
+
+## Available Tools
+
+All tool calls must use this exact format:
+
+{
+"tool": "<tool_name>",
+"args": {
+...
+}
+}
+
+---
+
+### read_file
+
+Read a file with line numbers.
+
+Arguments:
+
+{
+"tool": "read_file",
+"args": {
+"filepath": "/testbed/path/to/file.py",
+"start_line": 1,
+"end_line": 100
+}
+}
+
+Expected output format:
+
+1: first line
+2: second line
+3: third line
+
+Use this tool whenever you need to inspect code.
+
+---
+
+### edit_file
+
+Replace an exact string in a file.
+
+Arguments:
+
+{
+"tool": "edit_file",
+"args": {
+"filepath": "/testbed/path/to/file.py",
+"old_str": "...",
+"new_str": "..."
+}
+}
+
+Requirements:
+
+* old_str must match the file contents exactly.
+* Preserve indentation and formatting.
+* Make the smallest possible change.
+
+---
+
+### list_files
+
+List files matching a pattern.
+
+Arguments:
+
+{
+"tool": "list_files",
+"args": {
+"directory": "/testbed",
+"pattern": "*.py"
+}
+}
+
+Use this tool to explore repository structure.
+
+---
+
+### search_code
+
+Search code using a grep-like search.
+
+Arguments:
+
+{
+"tool": "search_code",
+"args": {
+"pattern": "flatten",
+"file_pattern": "*.py"
+}
+}
+
+Expected output format:
+
+/absolute/path/file.py:123 def flatten(...)
+/absolute/path/other.py:55 flatten(expr)
+
+Use this tool when the relevant symbol is unknown.
+
+---
+
+### search_function_or_class_definition_in_code
+
+Locate a function or class definition.
+
+Arguments:
+
+{
+"tool": "search_function_or_class_definition_in_code",
+"args": {
+"name": "flatten"
+}
+}
+
+Expected output format:
+
+/absolute/path/file.py:123 def flatten(...)
+
+Use this tool before broad searches whenever a function or class name is known.
+
+---
+
+### find_references
+
+Find usages of a symbol.
+
+Arguments:
+
+{
+"tool": "find_references",
+"args": {
+"name": "flatten"
+}
+}
+
+Optional disambiguation:
+
+{
+"tool": "find_references",
+"args": {
+"name": "flatten",
+"filepath": "/testbed/module.py",
+"line": 123
+}
+}
+
+Expected output format:
+
+/absolute/path/file.py:45 flatten(...)
+/absolute/path/other.py:90 result = flatten(...)
+
+Use this tool to understand call sites and impact before editing.
+
+---
+
+### run_command
+
+Run a shell command.
+
+Arguments:
+
+{
+"tool": "run_command",
+"args": {
+"command": "python -m pytest tests/test_example.py",
+"workdir": "/testbed"
+}
+}
+
+Returns:
+
+* stdout
+* stderr
+* exit code
+
+Use this for targeted investigation and debugging.
+
+---
+
+### run_tests
+
+Run the evaluation test suite.
+
+Arguments:
+
+{
+"tool": "run_tests",
+"args": {}
+}
+
+Use after implementing a fix.
+
+---
+
+### get_patch
+
+Retrieve the complete unified git diff.
+
+Arguments:
+
+{
+"tool": "get_patch",
+"args": {}
+}
+
+Use this to inspect the final set of modifications before submission if necessary.
+
+---
+
+### final_answer
+
+Submit the completed solution.
+
+Arguments:
+
+{
+"tool": "final_answer",
+"args": {}
+}
+
+Call this only when you are confident the bug is fixed.
+
+## Recommended Workflow
+
+1. Understand the issue.
+2. Locate relevant code.
+3. Read the implementation.
+4. Understand root cause.
+5. Make the minimal fix.
+6. Verify with tests.
+7. Inspect patch if needed.
+8. Submit.
+
+## Investigation Strategy
+
+If a symbol name is known:
+
+1. search_function_or_class_definition_in_code
+2. find_references
+3. read_file
+
+If the symbol is unknown:
+
+1. search_code
+2. list_files
+3. read_file
+
+Avoid reading large files unnecessarily.
+
+## Editing Principles
+
+* Fix the root cause.
+* Prefer minimal changes.
+* Do not refactor unrelated code.
+* Do not modify tests unless explicitly required.
+* Do not introduce speculative changes.
+
+## Rules
+
+* Output exactly ONE tool call per response.
+* Output valid JSON only.
+* Never explain your reasoning.
+* Never output markdown.
+* Never output multiple tool calls.
+* Always gather sufficient context before editing.
+* Use search_function_or_class_definition_in_code and find_references whenever possible.
+* Use run_tests to verify fixes.
+* Use get_patch if you need to review changes.
+* Finish by calling final_answer.
+
+Your objective is to produce a correct minimal patch that fixes the reported issue.
+"""
+
+
+class StepMetrics(BaseModel):
+    """Metrics for a single agent step.
+    Each step corresponds to one LLM generate -> sandbox execute
+    cycle.
+    All fields are required for evaluation, empty strings are
+    acceptable
+    for steps where a field doesn't apply (e.g., no sandbox execution
+    ).
+    """
+    step: int = Field(
+        ..., description="1-indexed iteration number"
+    )
+    input_tokens: int = Field(
+        ..., description="Tokens sent to the LLM for this step"
+    )
+    output_tokens: int = Field(
+        ..., description="Tokens generated by the LLM for this step"
+    )
+    request_time_ms: float = Field(
+        ..., description="Wall-clock time for the LLM API call in milliseconds"
+    )
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="ISO 8601 timestamp of when this step was recorded"
+    )
+    api_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the LLM API endpoint "
+            "(e.g., 'https://openrouter.ai/api/v1')"
+        )
+    )
+    model_name: str = Field(
+        default="",
+        description=(
+            "Model identifier used for this step "
+            "(e.g., 'qwen/qwen3-235b-a22b-2507')"
+        )
+    )
+    llm_output: str = Field(
+        default="",
+        description="Raw text generated by the LLM before code extraction"
+    )
+    sandbox_input: str = Field(
+        default="",
+        description="Python code sent to the sandbox for execution"
+    )
+    sandbox_output: str = Field(
+        default="",
+        description="Sandbox execution result (stdout/stderr/error message)"
+    )
+    retries: int = Field(
+        default=0,
+        description=(
+            "Number of LLM API retries before getting a successful "
+            "response (0 = first attempt succeeded)"
+        )
+    )
+
+
+class SolutionOutput(BaseModel):
+    """Output from student solution, required format for evaluation.
+    This is the JSON structure your agent must produce and write to
+    solution.json.
+    The moulinette validates this against task correctness and
+    metrics limits.
+    """
+    task_id: str = Field(
+        ...,
+        description=(
+            "Task identifier "
+            "(MBPP task_id as string, or SWE-bench instance_id)"
+        )
+    )
+    benchmark: str = Field(
+        ..., description="Benchmark type: 'mbpp' or 'swebench'"
+    )
+    success: bool = Field(
+        ..., description="Whether the agent believes it solved the task"
+    )
+    solution: str = Field(
+        ...,
+        description=(
+            "For MBPP: the Python function code. "
+            "For SWE-bench: the git patch (diff)"
+        )
+    )
+    iterations: int = Field(
+        ..., description="Number of agent loop iterations used"
+    )
+    total_requests: int = Field(
+        ...,
+        description="Total number of LLM API requests made (including retries)"
+    )
+    total_input_tokens: int = Field(
+        ..., description="Sum of input_tokens across all steps"
+    )
+    total_output_tokens: int = Field(
+        ..., description="Sum of output_tokens across all steps"
+    )
+    total_time_seconds: float = Field(
+        ..., description="Wall-clock time from agent start to finish"
+    )
+    steps: List[StepMetrics] = Field(
+        default_factory=list,
+        description="Per-step metrics, one entry per agent iteration"
+    )
+    system_prompt: str = Field(
+        default="",
+        description=(
+            "Full system prompt sent to the LLM (for provenance checking)"
+        )
+    )
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message if the agent failed (None if successful)"
+    )
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="ISO 8601 timestamp of when the solution was produced"
+    )
+
+
+class SWEBenchAgent:
+    def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
+        self.sandbox = sandbox
+        self.sandbox.build("..")
+        self.max_iterations: int = max_iterations
+        self.llms: list[Any] = llms
+        self.llm: Any = self.llms[0]
+        self.current_llm_index: int = 0
+
+    def chose_llm(self) -> None:
+        if self.current_llm_index + 1 >= len(self.llms):
+            raise ValueError("Error no more tokens.")
+
+        self.current_llm_index = (self.current_llm_index + 1)
+        self.llm = self.llms[self.current_llm_index]
+
+    def solve(self, task: SWEBenchTaskInput) -> SolutionOutput:
+        start_time = time.time()
+        steps: list[StepMetrics] = []
+        total_requests = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+
+        messages = [
+            {"role": "user", "content": self.build_initial_prompt(task)}
+        ]
+
+        self.sandbox.start()
+
+        try:
+            for iteration in range(self.max_iterations):
+                retries = 0
+
+                while True:
+                    try:
+                        request_start = time.time()
+                        response = self.llm.generate_messages(messages)
+                        request_time_ms = (time.time() - request_start) * 1000
+                        total_requests += 1
+                        break
+                    except Exception:
+                        retries += 1
+                        self.chose_llm()
+
+                total_input_tokens += response.input_tokens
+                total_output_tokens += response.output_tokens
+
+                llm_output = response.content
+
+                tool_name, tool_args = self.extract_tool_call(llm_output)
+
+                if tool_name == "final_answer":
+                    patch = self.sandbox.get_patch()
+
+                    steps.append(StepMetrics(
+                        step=iteration + 1,
+                        input_tokens=response.input_tokens,
+                        output_tokens=response.output_tokens,
+                        request_time_ms=request_time_ms,
+                        api_url=self.llm.api_url,
+                        model_name=self.llm.model_name,
+                        llm_output=llm_output,
+                        sandbox_input="git diff",
+                        sandbox_output=patch,
+                        retries=retries,
+                    ))
+
+                    return SolutionOutput(
+                        task_id=task.instance_id,
+                        benchmark="swebench",
+                        success=bool(patch.strip()),
+                        solution=patch,
+                        system_prompt=SYSTEM_PROMPT,
+                        iterations=iteration + 1,
+                        total_requests=total_requests,
+                        total_input_tokens=total_input_tokens,
+                        total_output_tokens=total_output_tokens,
+                        total_time_seconds=time.time() - start_time,
+                        steps=steps,
+                    )
+
+                tool_output = self.dispatch_tool(tool_name, tool_args)
+
+                steps.append(StepMetrics(
+                    step=iteration + 1,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    request_time_ms=request_time_ms,
+                    api_url=self.llm.api_url,
+                    model_name=self.llm.model_name,
+                    llm_output=llm_output,
+                    sandbox_input=f"{tool_name}({tool_args})",
+                    sandbox_output=tool_output,
+                    retries=retries,
+                ))
+
+                messages.append({"role": "assistant", "content": llm_output})
+                messages.append(
+                    {"role": "user", "content": f"Tool output:\n{tool_output}"}
+                )
+
+        finally:
+            self.sandbox.stop()
+
+        patch = self.sandbox.get_patch()
+        return SolutionOutput(
+            task_id=task.instance_id,
+            benchmark="swebench",
+            success=False,
+            solution=patch,
+            system_prompt=SYSTEM_PROMPT,
+            iterations=self.max_iterations,
+            total_requests=total_requests,
+            total_input_tokens=total_input_tokens,
+            total_output_tokens=total_output_tokens,
+            total_time_seconds=time.time() - start_time,
+            steps=steps,
+            error="Maximum iterations reached",
+        )
+
+    @staticmethod
+    def extract_tool_call(llm_output: str) -> tuple[str | None, dict]:
+        """
+        Extract tool name and args from LLM output.
+        Expects a JSON block in the format:
+    ```json
+        {
+            "tool": "tool_name",
+            "args": { ... }
+        }
+    ```
+        """
+        pattern = r"```json\s*([\s\S]*?)\s*```"
+        match = re.search(pattern, llm_output)
+
+        if match:
+            raw = match.group(1)
+        else:
+            pattern = r"\{[\s\S]*\}"
+            match = re.search(pattern, llm_output)
+            if not match:
+                return None, {}
+            raw = match.group(0)
+
+        try:
+            parsed = json.loads(raw)
+            tool_name = parsed.get("tool")
+            tool_args = parsed.get("args", {})
+
+            if not isinstance(tool_name, str) or not tool_name:
+                return None, {}
+            if not isinstance(tool_args, dict):
+                return None, {}
+
+            return tool_name, tool_args
+
+        except json.JSONDecodeError:
+            return None, {}
+
+    @staticmethod
+    def build_initial_prompt(task: SWEBenchTaskInput) -> str:
+        prompt = SYSTEM_PROMPT
+        prompt += "\n## Task\n"
+        prompt += f"Repository: {task.repo}\n"
+        prompt += f"Instance: {task.instance_id}\n\n"
+        prompt += f"## Problem Statement\n{task.problem_statement}\n"
+
+        if task.hints_text:
+            prompt += f"\n## Hints\n{task.hints_text}\n"
+
+        prompt += "\nThe repository is at /testbed. Start by searching for the relevant code."
+        return prompt
+
+    def dispatch_tool(self, tool_name: str, tool_args: dict) -> str:
+        print("tool_name", tool_name)
+        tools = {
+            "read_file":       self._tool_read_file,
+            "edit_file":       self._tool_edit_file,
+            "list_files":      self._tool_list_files,
+            "search_code":     self._tool_search_code,
+            "search_function_or_class_definition_in_code": self._tool_search_definition,
+            "find_references": self._tool_find_references,
+            "run_tests":       self._tool_run_tests,
+            "run_command":     self._tool_run_command,
+            "final_answer": lambda _: "",
+        }
+        if tool_name not in tools:
+            return f"ERROR: Unknown tool '{tool_name}'. Available: {', '.join(tools.keys())}"
+        try:
+            return tools[tool_name](tool_args)
+        except KeyError as e:
+            return f"ERROR: Missing required argument {e} for tool '{tool_name}'."
+        except Exception as e:
+            return f"ERROR: Tool '{tool_name}' failed: {e}"
+
+    def _tool_read_file(self, args: dict) -> str:
+        return self.sandbox.read_file(args["filepath"], args.get("start_line"), args.get("end_line"))
+
+    def _tool_edit_file(self, args: dict) -> str:
+        return self.sandbox.edit_file(args["filepath"], args["old_str"], args["new_str"])
+
+    def _tool_list_files(self, args: dict) -> str:
+        return self.sandbox.list_files(args["directory"], args.get("pattern", "*"))
+
+    def _tool_search_code(self, args: dict) -> str:
+        return self.sandbox.search_code(args["pattern"], args.get("file_pattern", "*.py"))
+
+    def _tool_search_definition(self, args: dict) -> str:
+        return self.sandbox.search_function_or_class_definition_in_code(args["name"])
+
+    def _tool_find_references(self, args: dict) -> str:
+        return self.sandbox.find_references(args["name"], args.get("filepath"), args.get("line"))
+
+    def _tool_run_tests(self, args: dict) -> str:
+        return self.sandbox.run_tests()
+
+    def _tool_run_command(self, args: dict) -> str:
+        return self.sandbox.run_command(args["command"], args.get("workdir", "/testbed"))

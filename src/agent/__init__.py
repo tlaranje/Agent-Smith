@@ -1,3 +1,7 @@
-from .code_agent import CodeAgent
+from .mbpp_agent import MBPPAgent
+from .swe_bench_agent import SWEBenchAgent
 
-__all__ = ["CodeAgent"]
+__all__ = [
+    "MBPPAgent",
+    "SWEBenchAgent"
+]
