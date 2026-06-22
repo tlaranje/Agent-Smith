@@ -1,7 +1,0 @@
-{
-  "task_id": 420,
-  "task_definition": "create a function to return the current hour, day, month and year",
-  "function_definition": "",
-  "test_imports": [],
-  "test_list": []
-}

@@ -31,7 +31,7 @@ def main() -> None:
     task: SWEBenchTaskInput = SWEBenchTaskInput.from_file(
         args.task_file
     )
-    sandbox: Sandbox = Sandbox()
+    sandbox: Sandbox = Sandbox(task.docker_image)
     agent: SWEBenchAgent = SWEBenchAgent(
         get_llms(args.model_name), sandbox
     )

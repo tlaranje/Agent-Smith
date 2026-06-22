@@ -1,3 +1,5 @@
+import json
+import re
 from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -6,89 +8,282 @@ import time
 
 SYSTEM_PROMPT: str = """You are an expert software engineer tasked with fixing bugs in real open-source repositories.
 
-You operate in a loop. Each iteration you call exactly ONE tool to explore the codebase, make changes, or verify your fix.
+You operate in a loop. Each iteration you must output exactly ONE tool call as valid JSON and nothing else.
+
 The repository is available at /testbed.
 
 ## Available Tools
 
-Call tools using this exact JSON format:
-```json
+All tool calls must use this exact format:
+
 {
-    "tool": "tool_name",
-    "args": {
-        "arg1": "value1"
-    }
+"tool": "<tool_name>",
+"args": {
+...
 }
-```
+}
+
+---
 
 ### read_file
-Read a file or a specific line range.
-```json
-{"tool": "read_file", "args": {"path": "/testbed/sympy/core/add.py", "start": 10, "end": 50}}
-```
 
-### search_code
-Search for a pattern across the repository.
-```json
-{"tool": "search_code", "args": {"pattern": "def flatten", "path": "/testbed/sympy/core"}}
-```
+Read a file with line numbers.
+
+Arguments:
+
+{
+"tool": "read_file",
+"args": {
+"filepath": "/testbed/path/to/file.py",
+"start_line": 1,
+"end_line": 100
+}
+}
+
+Expected output format:
+
+1: first line
+2: second line
+3: third line
+
+Use this tool whenever you need to inspect code.
+
+---
 
 ### edit_file
-Replace an exact string in a file. old_str must match the file contents exactly (including indentation).
-```json
-{"tool": "edit_file", "args": {"path": "/testbed/sympy/core/add.py", "old_str": "def foo():\n    pass", "new_str": "def foo():\n    return 1"}}
-```
 
-### run_bash
-Run any shell command in the repository.
-```json
-{"tool": "run_bash", "args": {"cmd": "cd /testbed && python -c 'import sympy; print(sympy.__version__)'}}
-```
+Replace an exact string in a file.
+
+Arguments:
+
+{
+"tool": "edit_file",
+"args": {
+"filepath": "/testbed/path/to/file.py",
+"old_str": "...",
+"new_str": "..."
+}
+}
+
+Requirements:
+
+* old_str must match the file contents exactly.
+* Preserve indentation and formatting.
+* Make the smallest possible change.
+
+---
+
+### list_files
+
+List files matching a pattern.
+
+Arguments:
+
+{
+"tool": "list_files",
+"args": {
+"directory": "/testbed",
+"pattern": "*.py"
+}
+}
+
+Use this tool to explore repository structure.
+
+---
+
+### search_code
+
+Search code using a grep-like search.
+
+Arguments:
+
+{
+"tool": "search_code",
+"args": {
+"pattern": "flatten",
+"file_pattern": "*.py"
+}
+}
+
+Expected output format:
+
+/absolute/path/file.py:123 def flatten(...)
+/absolute/path/other.py:55 flatten(expr)
+
+Use this tool when the relevant symbol is unknown.
+
+---
+
+### search_function_or_class_definition_in_code
+
+Locate a function or class definition.
+
+Arguments:
+
+{
+"tool": "search_function_or_class_definition_in_code",
+"args": {
+"name": "flatten"
+}
+}
+
+Expected output format:
+
+/absolute/path/file.py:123 def flatten(...)
+
+Use this tool before broad searches whenever a function or class name is known.
+
+---
+
+### find_references
+
+Find usages of a symbol.
+
+Arguments:
+
+{
+"tool": "find_references",
+"args": {
+"name": "flatten"
+}
+}
+
+Optional disambiguation:
+
+{
+"tool": "find_references",
+"args": {
+"name": "flatten",
+"filepath": "/testbed/module.py",
+"line": 123
+}
+}
+
+Expected output format:
+
+/absolute/path/file.py:45 flatten(...)
+/absolute/path/other.py:90 result = flatten(...)
+
+Use this tool to understand call sites and impact before editing.
+
+---
+
+### run_command
+
+Run a shell command.
+
+Arguments:
+
+{
+"tool": "run_command",
+"args": {
+"command": "python -m pytest tests/test_example.py",
+"workdir": "/testbed"
+}
+}
+
+Returns:
+
+* stdout
+* stderr
+* exit code
+
+Use this for targeted investigation and debugging.
+
+---
 
 ### run_tests
-Run the evaluation test suite to verify your fix.
-```json
-{"tool": "run_tests", "args": {}}
-```
+
+Run the evaluation test suite.
+
+Arguments:
+
+{
+"tool": "run_tests",
+"args": {}
+}
+
+Use after implementing a fix.
+
+---
+
+### get_patch
+
+Retrieve the complete unified git diff.
+
+Arguments:
+
+{
+"tool": "get_patch",
+"args": {}
+}
+
+Use this to inspect the final set of modifications before submission if necessary.
+
+---
 
 ### final_answer
-Call this when you are confident your fix is correct. This will capture the git diff as the patch.
-```json
-{"tool": "final_answer", "args": {}}
-```
 
-## Methodology
+Submit the completed solution.
 
-Follow this process strictly:
+Arguments:
 
-1. **Understand the problem** — Read the problem statement carefully. Identify:
-   - What is the expected behavior?
-   - What is the current (broken) behavior?
-   - Which module, class, or function is likely responsible?
+{
+"tool": "final_answer",
+"args": {}
+}
 
-2. **Locate the relevant code** — Do NOT read files randomly.
-   - Use search_code to find function/class names mentioned in the issue.
-   - Use read_file only on files that are clearly relevant.
+Call this only when you are confident the bug is fixed.
 
-3. **Understand before editing** — Read enough surrounding context to understand
-   why the bug exists. A fix applied without understanding will likely be wrong.
+## Recommended Workflow
 
-4. **Make the minimal fix** — Change only what is necessary to fix the root cause.
-   Do not refactor, rename, or clean up unrelated code.
+1. Understand the issue.
+2. Locate relevant code.
+3. Read the implementation.
+4. Understand root cause.
+5. Make the minimal fix.
+6. Verify with tests.
+7. Inspect patch if needed.
+8. Submit.
 
-5. **Verify** — After editing, run_tests to check whether the fix works.
-   If tests fail, read the error carefully before retrying — do not guess.
+## Investigation Strategy
 
-6. **Submit** — Once tests pass (or you are confident the fix is correct),
-   call final_answer.
+If a symbol name is known:
+
+1. search_function_or_class_definition_in_code
+2. find_references
+3. read_file
+
+If the symbol is unknown:
+
+1. search_code
+2. list_files
+3. read_file
+
+Avoid reading large files unnecessarily.
+
+## Editing Principles
+
+* Fix the root cause.
+* Prefer minimal changes.
+* Do not refactor unrelated code.
+* Do not modify tests unless explicitly required.
+* Do not introduce speculative changes.
 
 ## Rules
 
-- Call exactly ONE tool per response, nothing else.
-- old_str in edit_file must match the file exactly — copy it from read_file output.
-- Never edit test files. Fix the source code only.
-- If you are stuck, search more before trying random edits.
-- If run_tests reveals unrelated failures, ignore them and focus on the issue.
+* Output exactly ONE tool call per response.
+* Output valid JSON only.
+* Never explain your reasoning.
+* Never output markdown.
+* Never output multiple tool calls.
+* Always gather sufficient context before editing.
+* Use search_function_or_class_definition_in_code and find_references whenever possible.
+* Use run_tests to verify fixes.
+* Use get_patch if you need to review changes.
+* Finish by calling final_answer.
+
+Your objective is to produce a correct minimal patch that fixes the reported issue.
 """
 
 
@@ -218,6 +413,7 @@ class SolutionOutput(BaseModel):
 class SWEBenchAgent:
     def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
+        self.sandbox.build("..")
         self.max_iterations: int = max_iterations
         self.llms: list[Any] = llms
         self.llm: Any = self.llms[0]
@@ -250,7 +446,7 @@ class SWEBenchAgent:
                 while True:
                     try:
                         request_start = time.time()
-                        response = self.llm.generate(messages)
+                        response = self.llm.generate_messages(messages)
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
@@ -316,7 +512,7 @@ class SWEBenchAgent:
                 )
 
         finally:
-            self.sandbox.cleanup()
+            self.sandbox.stop()
 
         patch = self.sandbox.get_patch()
         return SolutionOutput(
@@ -335,6 +531,45 @@ class SWEBenchAgent:
         )
 
     @staticmethod
+    def extract_tool_call(llm_output: str) -> tuple[str | None, dict]:
+        """
+        Extract tool name and args from LLM output.
+        Expects a JSON block in the format:
+    ```json
+        {
+            "tool": "tool_name",
+            "args": { ... }
+        }
+    ```
+        """
+        pattern = r"```json\s*([\s\S]*?)\s*```"
+        match = re.search(pattern, llm_output)
+
+        if match:
+            raw = match.group(1)
+        else:
+            pattern = r"\{[\s\S]*\}"
+            match = re.search(pattern, llm_output)
+            if not match:
+                return None, {}
+            raw = match.group(0)
+
+        try:
+            parsed = json.loads(raw)
+            tool_name = parsed.get("tool")
+            tool_args = parsed.get("args", {})
+
+            if not isinstance(tool_name, str) or not tool_name:
+                return None, {}
+            if not isinstance(tool_args, dict):
+                return None, {}
+
+            return tool_name, tool_args
+
+        except json.JSONDecodeError:
+            return None, {}
+
+    @staticmethod
     def build_initial_prompt(task: SWEBenchTaskInput) -> str:
         prompt = SYSTEM_PROMPT
         prompt += "\n## Task\n"
@@ -347,3 +582,49 @@ class SWEBenchAgent:
 
         prompt += "\nThe repository is at /testbed. Start by searching for the relevant code."
         return prompt
+
+    def dispatch_tool(self, tool_name: str, tool_args: dict) -> str:
+        print("tool_name", tool_name)
+        tools = {
+            "read_file":       self._tool_read_file,
+            "edit_file":       self._tool_edit_file,
+            "list_files":      self._tool_list_files,
+            "search_code":     self._tool_search_code,
+            "search_function_or_class_definition_in_code": self._tool_search_definition,
+            "find_references": self._tool_find_references,
+            "run_tests":       self._tool_run_tests,
+            "run_command":     self._tool_run_command,
+            "final_answer": lambda _: "",
+        }
+        if tool_name not in tools:
+            return f"ERROR: Unknown tool '{tool_name}'. Available: {', '.join(tools.keys())}"
+        try:
+            return tools[tool_name](tool_args)
+        except KeyError as e:
+            return f"ERROR: Missing required argument {e} for tool '{tool_name}'."
+        except Exception as e:
+            return f"ERROR: Tool '{tool_name}' failed: {e}"
+
+    def _tool_read_file(self, args: dict) -> str:
+        return self.sandbox.read_file(args["filepath"], args.get("start_line"), args.get("end_line"))
+
+    def _tool_edit_file(self, args: dict) -> str:
+        return self.sandbox.edit_file(args["filepath"], args["old_str"], args["new_str"])
+
+    def _tool_list_files(self, args: dict) -> str:
+        return self.sandbox.list_files(args["directory"], args.get("pattern", "*"))
+
+    def _tool_search_code(self, args: dict) -> str:
+        return self.sandbox.search_code(args["pattern"], args.get("file_pattern", "*.py"))
+
+    def _tool_search_definition(self, args: dict) -> str:
+        return self.sandbox.search_function_or_class_definition_in_code(args["name"])
+
+    def _tool_find_references(self, args: dict) -> str:
+        return self.sandbox.find_references(args["name"], args.get("filepath"), args.get("line"))
+
+    def _tool_run_tests(self, args: dict) -> str:
+        return self.sandbox.run_tests()
+
+    def _tool_run_command(self, args: dict) -> str:
+        return self.sandbox.run_command(args["command"], args.get("workdir", "/testbed"))
