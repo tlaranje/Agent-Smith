@@ -11,14 +11,8 @@ class CohereAPI:
         self.api_url: str = ""
         self.model_name = "command-a-plus-05-2026"
 
-    def generate(self, prompt: str):
+    def generate_messages(self, messages: list[dict]):
         from . import LLMResponse
-        messages = [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
 
         response = self.client.chat(
             model=self.model_name,
@@ -31,10 +25,8 @@ class CohereAPI:
             if hasattr(item, "text")
         ]
 
-        content = "\n".join(texts)
-
         return LLMResponse(
-            content=content,
+            content="\n".join(texts),
             input_tokens=response.usage.tokens.input_tokens,
             output_tokens=response.usage.tokens.output_tokens,
             model_name=self.model_name

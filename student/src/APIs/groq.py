@@ -10,13 +10,12 @@ class GroqAPI:
         self.api_url: str = ""
         self.model_name = "llama-3.3-70b-versatile"
 
-    def generate(self, prompt: str):
+    def generate_messages(self, messages: list[dict]):
         from . import LLMResponse
         chat_completion = self.client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             model=self.model_name
         )
-
         return LLMResponse(
             content=chat_completion.choices[0].message.content,
             input_tokens=chat_completion.usage.prompt_tokens,

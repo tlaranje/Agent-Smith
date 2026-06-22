@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
-from src.agent import MBPPAgent
-from src.parser import MBPPTaskInput
+from src.agent import SWEBenchAgent
+from src.parser import SWEBenchTaskInput
 from src.sandbox import Sandbox
 from src.APIs import (
     GeminiAPI,
@@ -13,13 +13,13 @@ from src.APIs import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="MBPP Agent"
+        description="SWE Bench Agent"
     )
     parser.add_argument(
-        "--task-file", default="../data/input/mbpp_task.json"
+        "--task-file", default="../data/input/swebench_task.json"
     )
     parser.add_argument(
-        "--output", default="../data/output/mbpp_task_solution.json"
+        "--output", default="../data/output/swebench_task_solution.json"
     )
     parser.add_argument(
         "--model-name", default="gemini"
@@ -28,11 +28,11 @@ def main() -> None:
         "--provider-url"
     )
     args = parser.parse_args()
-    task: MBPPTaskInput = MBPPTaskInput.from_file(
+    task: SWEBenchTaskInput = SWEBenchTaskInput.from_file(
         args.task_file
     )
     sandbox: Sandbox = Sandbox()
-    agent: MBPPAgent = MBPPAgent(
+    agent: SWEBenchAgent = SWEBenchAgent(
         get_llms(args.model_name), sandbox
     )
     solution = agent.solve(task)

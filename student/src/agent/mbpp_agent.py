@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Any, Optional, List
 from rich import print
 from datetime import datetime
+from ..parser import MBPPTaskInput
 import time
 
 import re
@@ -69,9 +70,10 @@ class SolutionOutput(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
-class CodeAgent:
+class MBPPAgent:
     def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
+        self.sandbox.build("..")
         self.max_iterations: int = max_iterations
         self.llms: list[Any] = llms
         self.llm: Any = self.llms[0]
@@ -84,80 +86,69 @@ class CodeAgent:
         self.current_llm_index = (self.current_llm_index + 1)
         self.llm = self.llms[self.current_llm_index]
 
-    def give_task(self, task: BaseModel) -> SolutionOutput:
+    def solve(self, task: MBPPTaskInput) -> SolutionOutput:
         start_time = time.time()
-
-        observations = ""
         steps: list[StepMetrics] = []
-
         total_requests = 0
         total_input_tokens = 0
         total_output_tokens = 0
+        messages = [{"role": "user", "content": self.build_prompt(task)}]
 
-        for iteration in range(self.max_iterations):
+        self.sandbox.start()
 
-            prompt = self.build_prompt(
-                task=task,
-                observations=observations
-            )
-
-            retries = 0
-
-            while True:
-                try:
-                    request_start = time.time()
-
-                    response = self.llm.generate(prompt)
-
-                    request_time_ms = (
-                        time.time() - request_start
-                    ) * 1000
-
-                    total_requests += 1
-                    break
-
-                except Exception:
-                    retries += 1
-                    self.chose_llm()
-
-            code = self.extract_code(response.content)
-
-            sandbox_output, done = self.sandbox.execute(code)
-
-            step = StepMetrics(
-                step=iteration + 1,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                request_time_ms=request_time_ms,
-                api_url=self.llm.api_url,
-                model_name=self.llm.model_name,
-                llm_output=response.content,
-                sandbox_input=code,
-                sandbox_output=sandbox_output,
-                retries=retries,
-            )
-
-            steps.append(step)
-
-            total_input_tokens += response.input_tokens
-            total_output_tokens += response.output_tokens
-
-            if done:
-                return SolutionOutput(
-                    task_id=str(task.task_id),
-                    benchmark="mbpp",
-                    success=True,
-                    solution=sandbox_output,
-                    system_prompt=SYSTEM_PROMPT,
-                    iterations=iteration + 1,
-                    total_requests=total_requests,
-                    total_input_tokens=total_input_tokens,
-                    total_output_tokens=total_output_tokens,
-                    total_time_seconds=time.time() - start_time,
-                    steps=steps,
-                )
-
-            observations = sandbox_output
+        try:
+            for iteration in range(self.max_iterations):
+                retries = 0
+                while True:
+                    try:
+                        request_start = time.time()
+                        response = self.llm.generate_messages(messages)
+                        request_time_ms = (time.time() - request_start) * 1000
+                        total_requests += 1
+                        break
+                    except Exception:
+                        retries += 1
+                        self.chose_llm()
+                code = self.extract_code(response.content)
+                sandbox_output, done = self.sandbox.execute(code)
+                steps.append(StepMetrics(
+                    step=iteration + 1,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    request_time_ms=request_time_ms,
+                    api_url=self.llm.api_url,
+                    model_name=self.llm.model_name,
+                    llm_output=response.content,
+                    sandbox_input=code,
+                    sandbox_output=sandbox_output,
+                    retries=retries,
+                ))
+                total_input_tokens += response.input_tokens
+                total_output_tokens += response.output_tokens
+                if done:
+                    return SolutionOutput(
+                        task_id=str(task.task_id),
+                        benchmark="mbpp",
+                        success=True,
+                        solution=sandbox_output,
+                        system_prompt=SYSTEM_PROMPT,
+                        iterations=iteration + 1,
+                        total_requests=total_requests,
+                        total_input_tokens=total_input_tokens,
+                        total_output_tokens=total_output_tokens,
+                        total_time_seconds=time.time() - start_time,
+                        steps=steps,
+                    )
+                messages.append(
+                    {"role": "assistant", "content": response.content})
+                messages.append({
+                    "role": "user",
+                    "content": self._format_observation(
+                        sandbox_output, iteration
+                    )
+                })
+        finally:
+            self.sandbox.stop()
 
         return SolutionOutput(
             task_id=str(task.task_id),
@@ -174,23 +165,30 @@ class CodeAgent:
             error="Maximum iterations reached",
         )
 
+    def _format_observation(self, sandbox_output: str, iteration: int) -> str:
+        """Give the model structured feedback rather than raw stdout."""
+        remaining = self.max_iterations - iteration - 1
+        return (
+            f"Execution result:\n```\n{sandbox_output}\n```\n\n"
+            f"You have {remaining} attempt(s) remaining. "
+            "If tests passed, call final_answer(). "
+            "Otherwise fix the issue above."
+        )
+
     @staticmethod
-    def build_prompt(task: BaseModel, observations: str) -> str:
+    def build_prompt(task: MBPPTaskInput) -> str:
+        """Initial message — includes system prompt + task description."""
         task_data = task.model_dump()
-
-        prompt = SYSTEM_PROMPT
-        prompt += "\n## Task\n"
-        prompt += f"Description: {task_data['task_definition']}\n"
-        prompt += f"Function signature: {task_data['function_definition']}\n"
-        prompt += "Tests to pass:\n"
-        for test in task_data['test_list']:
-            prompt += f"  {test}\n"
-
-        if observations:
-            prompt += f"\n## Last execution output\n{observations}\n"
-
-        prompt += "\nWrite your solution:"
-        return prompt
+        lines = [
+            SYSTEM_PROMPT,
+            "\n## Task",
+            f"Description: {task_data['task_definition']}",
+            f"Function signature: {task_data['function_definition']}",
+            "Tests to pass:",
+            *[f"  {t}" for t in task_data['test_list']],
+            "\nWrite your solution:",
+        ]
+        return "\n".join(lines)
 
     @staticmethod
     def extract_code(text: str) -> str:

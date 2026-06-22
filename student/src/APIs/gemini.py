@@ -10,13 +10,21 @@ class GeminiAPI:
         self.api_url: str = ""
         self.model_name = "gemini-2.5-flash-lite"
 
-    def generate(self, prompt: str):
+    def generate_messages(self, messages: list[dict]) -> "LLMResponse":
         from . import LLMResponse
+
+        contents = [
+            {
+                "role": "model" if m["role"] == "assistant" else m["role"],
+                "parts": [{"text": m["content"]}]
+            }
+            for m in messages
+        ]
+
         response = self.client.models.generate_content(
             model=self.model_name,
-            contents=prompt,
+            contents=contents,
         )
-
         return LLMResponse(
             content=response.text,
             input_tokens=response.usage_metadata.prompt_token_count,

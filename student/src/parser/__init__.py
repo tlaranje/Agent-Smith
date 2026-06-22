@@ -1,3 +1,6 @@
-from .parser import MBPPTaskInput
+from .parser import MBPPTaskInput, SWEBenchTaskInput
 
-__all__ = ["MBPPTaskInput"]
+__all__ = [
+    "MBPPTaskInput"
+    "SWEBenchTaskInput"
+]
