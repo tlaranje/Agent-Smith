@@ -1,4 +1,5 @@
 from mcp.server.fastmcp import FastMCP
+from typing import Any
 
 
 class MCPServer:
@@ -6,5 +7,5 @@ class MCPServer:
         self.mcp = FastMCP("MBPP Test Runner")
         self.current_task_tests: list[str] = []
 
-    def run(self, transport: str = "stdio") -> None:
+    def run(self, transport: Any = "stdio") -> None:
         self.mcp.run(transport=transport)

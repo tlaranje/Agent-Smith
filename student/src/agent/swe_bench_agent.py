@@ -7,9 +7,11 @@ from ..parser import SWEBenchTaskInput
 import time
 
 SYSTEM_PROMPT: str = """
-You are an expert software engineer tasked with fixing bugs in real open-source repositories.
+You are an expert software engineer tasked with fixing bugs in real
+open-source repositories.
 
-You operate in a loop. Each iteration you must output exactly ONE tool call as valid JSON and nothing else.
+You operate in a loop. Each iteration you must output exactly ONE
+tool call as valid JSON and nothing else.
 
 The repository is available at /testbed.
 
@@ -219,7 +221,8 @@ Arguments:
 "args": {}
 }
 
-Use this to inspect the final set of modifications before submission if necessary.
+Use this to inspect the final set of modifications
+before submission if necessary.
 
 ---
 
@@ -279,17 +282,20 @@ Avoid reading large files unnecessarily.
 * Never output markdown.
 * Never output multiple tool calls.
 * Always gather sufficient context before editing.
-* Use search_function_or_class_definition_in_code and find_references whenever possible.
+* Use search_function_or_class_definition_in_code and find_references
+whenever possible.
 * Use run_tests to verify fixes.
 * Use get_patch if you need to review changes.
 * Finish by calling final_answer.
 
-Your objective is to produce a correct minimal patch that fixes the reported issue.
+Your objective is to produce a correct minimal patch that
+fixes the reported issue.
 """
 
 
 class StepMetrics(BaseModel):
-    """Metrics for a single agent step.
+    """
+    Metrics for a single agent step.
     Each step corresponds to one LLM generate -> sandbox execute
     cycle.
     All fields are required for evaluation, empty strings are
@@ -537,12 +543,12 @@ class SWEBenchAgent:
         """
         Extract tool name and args from LLM output.
         Expects a JSON block in the format:
-    ```json
-        {
-            "tool": "tool_name",
-            "args": { ... }
-        }
-    ```
+        ```
+            {
+                "tool": "tool_name",
+                "args": { ... }
+            }
+        ```
         """
         pattern = r"```json\s*([\s\S]*?)\s*```"
         match = re.search(pattern, llm_output)
@@ -582,51 +588,8 @@ class SWEBenchAgent:
         if task.hints_text:
             prompt += f"\n## Hints\n{task.hints_text}\n"
 
-        prompt += "\nThe repository is at /testbed. Start by searching for the relevant code."
+        prompt += (
+            "\nThe repository is at /testbed. Start by searching "
+            "for the relevant code."
+        )
         return prompt
-
-    def dispatch_tool(self, tool_name: str, tool_args: dict) -> str:
-        print("tool_name", tool_name)
-        tools = {
-            "read_file":       self._tool_read_file,
-            "edit_file":       self._tool_edit_file,
-            "list_files":      self._tool_list_files,
-            "search_code":     self._tool_search_code,
-            "search_function_or_class_definition_in_code": self._tool_search_definition,
-            "find_references": self._tool_find_references,
-            "run_tests":       self._tool_run_tests,
-            "run_command":     self._tool_run_command,
-            "final_answer": lambda _: "",
-        }
-        if tool_name not in tools:
-            return f"ERROR: Unknown tool '{tool_name}'. Available: {', '.join(tools.keys())}"
-        try:
-            return tools[tool_name](tool_args)
-        except KeyError as e:
-            return f"ERROR: Missing required argument {e} for tool '{tool_name}'."
-        except Exception as e:
-            return f"ERROR: Tool '{tool_name}' failed: {e}"
-
-    def _tool_read_file(self, args: dict) -> str:
-        return self.sandbox.read_file(args["filepath"], args.get("start_line"), args.get("end_line"))
-
-    def _tool_edit_file(self, args: dict) -> str:
-        return self.sandbox.edit_file(args["filepath"], args["old_str"], args["new_str"])
-
-    def _tool_list_files(self, args: dict) -> str:
-        return self.sandbox.list_files(args["directory"], args.get("pattern", "*"))
-
-    def _tool_search_code(self, args: dict) -> str:
-        return self.sandbox.search_code(args["pattern"], args.get("file_pattern", "*.py"))
-
-    def _tool_search_definition(self, args: dict) -> str:
-        return self.sandbox.search_function_or_class_definition_in_code(args["name"])
-
-    def _tool_find_references(self, args: dict) -> str:
-        return self.sandbox.find_references(args["name"], args.get("filepath"), args.get("line"))
-
-    def _tool_run_tests(self, args: dict) -> str:
-        return self.sandbox.run_tests()
-
-    def _tool_run_command(self, args: dict) -> str:
-        return self.sandbox.run_command(args["command"], args.get("workdir", "/testbed"))

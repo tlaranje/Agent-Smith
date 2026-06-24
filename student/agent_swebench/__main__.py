@@ -1,9 +1,9 @@
 import argparse
 from pathlib import Path
-from src.agent import SWEBenchAgent
-from src.parser import SWEBenchTaskInput
-from src.sandbox import Sandbox
-from src.APIs import get_llms
+from ..src.agent import SWEBenchAgent
+from ..src.parser import SWEBenchTaskInput
+from ..src.sandbox import Sandbox
+from ..src.APIs import get_llms
 
 
 def main() -> None:
