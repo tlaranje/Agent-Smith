@@ -10,7 +10,7 @@ import sys
 
 def main() -> None:
     try:
-        sandbox = Sandbox("agent_sandbox:latest")
+        sandbox = Sandbox("MBPP", "agent_sandbox:latest")
 
         task = MBPPTaskInput().from_file("data/input/task.json")
 

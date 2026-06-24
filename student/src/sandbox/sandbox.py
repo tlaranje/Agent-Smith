@@ -1,4 +1,6 @@
 from .sandbox_config import SandboxConfig
+from ..mcp import MCPClient
+from pathlib import Path
 from typing import Any
 from rich import print
 import tarfile
@@ -8,10 +10,40 @@ import os
 
 
 class Sandbox:
-    def __init__(self, image: str = "agent_sandbox:latest") -> None:
+    def __init__(
+        self, agent: str = "MBPP", image: str = "agent_sandbox:latest"
+    ) -> None:
         self.image = image
         self.client = docker.from_env()
         self.container: Any = None
+
+        root_path = Path(__file__).parent.parent.parent.parent
+
+        server_env = dict(os.environ)
+        server_env["IS_MCP_SERVER"] = "1"
+
+        if agent == "MBPP":
+            self.mcp_client = MCPClient(
+                command="uv",
+                args=["run", "python", f"{root_path}/mcp_tools_mbpp.py"],
+                env=server_env
+            )
+        elif agent == "SWE_BENCH":
+            self.mcp_client = MCPClient(
+                command="uv",
+                args=["run", "python", f"{root_path}/mcp_tools_swe_bench.py"],
+                env=server_env
+            )
+
+    def _final_answer(self, answer_string: str):
+        with open("/tmp/agent/final_result.py", "w", encoding="utf-8") as f:
+            f.write(answer_string)
+
+    def build_namespace(self) -> dict:
+        namespace = {"__builtins__": self._restricted_builtins()}
+        namespace.update(self.mcp_client.discover_tools())
+        namespace["final_answer"] = self._final_answer
+        return namespace
 
     def execute(
         self, code: str, test_list: list[str] | None = None
@@ -25,18 +57,13 @@ class Sandbox:
 
         self.container.exec_run("rm -f /tmp/agent/final_result.py")
 
-        with open("../data/docker/setup.py", "r") as f:
-            setup = f.read()
-
-        full_code = setup + "\n" + code
-
         if test_list:
-            full_code += "\n\n# --- AUTOMATED TESTS ---\n"
+            code += "\n\n# --- AUTOMATED TESTS ---\n"
             for test in test_list:
-                full_code += f"{test}\n"
+                code += f"{test}\n"
 
         with open("../data/docker/code.py", "w", encoding="utf-8") as f:
-            f.write(full_code)
+            f.write(code)
 
         res = self.container.exec_run("python3 /sandbox/code.py")
         output = res.output.decode("utf-8")
@@ -52,8 +79,7 @@ class Sandbox:
             return '"""\n' + code + '"""', True
 
         check = self.container.exec_run("python3 /tmp/agent/final_result.py")
-        # with open("tmp/agent/final_result.py", "r") as fd:
-        #     data = fd.read()
+
         if check.exit_code == 0:
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
             return output, True

@@ -26,7 +26,12 @@ def main() -> None:
     task: MBPPTaskInput = MBPPTaskInput.from_file(
         args.task_file
     )
-    sandbox = Sandbox()
+
+    sandbox = Sandbox("MBPP")
+    sandbox.mcp_client.call_tool(
+            "set_current_task_tests", test_list=task.test_list
+    )
+
     agent: MBPPAgent = MBPPAgent(
         sandbox, get_llms(args.model_name)
     )
