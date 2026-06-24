@@ -413,7 +413,7 @@ class SolutionOutput(BaseModel):
 class SWEBenchAgent:
     def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
-        self.sandbox.build("..")
+        self.sandbox.pull()
         self.max_iterations: int = max_iterations
         self.llms: list[Any] = llms
         self.llm: Any = self.llms[0]
@@ -438,7 +438,6 @@ class SWEBenchAgent:
         ]
 
         self.sandbox.start()
-        self.sandbox.enter()
 
         try:
             for iteration in range(self.max_iterations):
@@ -585,7 +584,6 @@ class SWEBenchAgent:
         return prompt
 
     def dispatch_tool(self, tool_name: str, tool_args: dict) -> str:
-        print("tool_name", tool_name)
         tools = {
             "read_file":       self._tool_read_file,
             "edit_file":       self._tool_edit_file,

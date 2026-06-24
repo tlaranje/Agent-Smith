@@ -144,6 +144,18 @@ class Sandbox:
             #     "running.[/bold yellow]"
             # )
 
+    def pull(self) -> None:
+        """Pull a pre-built image from Docker Hub"""
+        print(
+            f"[bold blue][*][/bold blue] Pulling image '[cyan]{self.image}[/cyan]'...")
+        try:
+            self.client.images.pull(self.image)
+            print("[bold green][+][/bold green] Image pulled successfully.")
+        except docker.errors.ImageNotFound:
+            raise RuntimeError(f"Image not found on Docker Hub: {self.image}")
+        except Exception as e:
+            raise e
+
     def enter(self) -> None:
         if not self.container:
             # print(
@@ -285,7 +297,6 @@ class Sandbox:
         """
         cmd = f"grep -rn --include='{file_pattern}' '{pattern}' /testbed"
         out, _ = self._exec(cmd)
-        print("search_result", out)
         return out or "No matches found."
 
     def search_function_or_class_definition_in_code(self, name: str) -> str:
