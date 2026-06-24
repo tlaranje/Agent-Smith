@@ -1,14 +1,9 @@
-import argparse
-from pathlib import Path
-from src.agent import MBPPAgent
 from src.parser import MBPPTaskInput
 from src.sandbox import Sandbox
-from src.APIs import (
-    GeminiAPI,
-    GroqAPI,
-    CohereAPI,
-    get_llms
-)
+from src.agent import MBPPAgent
+from src.APIs import get_llms
+from pathlib import Path
+import argparse
 
 
 def main() -> None:
@@ -31,9 +26,9 @@ def main() -> None:
     task: MBPPTaskInput = MBPPTaskInput.from_file(
         args.task_file
     )
-    sandbox: Sandbox = Sandbox()
+    sandbox = Sandbox()
     agent: MBPPAgent = MBPPAgent(
-        get_llms(args.model_name), sandbox
+        sandbox, get_llms(args.model_name)
     )
     solution = agent.solve(task)
     output_path = Path(args.output)

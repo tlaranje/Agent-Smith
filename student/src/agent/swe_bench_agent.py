@@ -6,7 +6,8 @@ from datetime import datetime
 from ..parser import SWEBenchTaskInput
 import time
 
-SYSTEM_PROMPT: str = """You are an expert software engineer tasked with fixing bugs in real open-source repositories.
+SYSTEM_PROMPT: str = """
+You are an expert software engineer tasked with fixing bugs in real open-source repositories.
 
 You operate in a loop. Each iteration you must output exactly ONE tool call as valid JSON and nothing else.
 
