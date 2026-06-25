@@ -1,7 +1,7 @@
-from ..src.parser import MBPPTaskInput
-from ..src.sandbox import Sandbox
-from ..src.agent import MBPPAgent
-from ..src.APIs import get_llms
+from src.parser import MBPPTaskInput
+from src.sandbox import Sandbox
+from src.agent import MBPPAgent
+from src.APIs import get_llms
 from pathlib import Path
 import argparse
 

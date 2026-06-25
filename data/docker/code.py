@@ -1,25 +1,39 @@
-def square_number(number):
+# Define a function that takes a number and returns its square
+def square_number(num):
     """
-    This function takes a number as input and returns its square.
+    Returns the square of a given number.
 
     Args:
-        number: The input number.
+        num (float): The number to be squared.
 
     Returns:
-        The square of the input number.
+        float: The square of the input number.
     """
-    return number * number
+    return num ** 2
 
-# Test cases
-assert square_number(5) == 25, f"Test Failed: Expected 25, got {square_number(5)}"
-assert square_number(0) == 0, f"Test Failed: Expected 0, got {square_number(0)}"
-assert square_number(-3) == 9, f"Test Failed: Expected 9, got {square_number(-3)}"
-assert square_number(1.5) == 2.25, f"Test Failed: Expected 2.25, got {square_number(1.5)}"
+# Test cases to verify the function works as expected
+test_cases = [
+    (0, 0),
+    (1, 1),
+    (2, 4),
+    (3, 9),
+    (4, 16),
+    (5, 25),
+    (-1, 1),
+    (-2, 4),
+    (-3, 9),
+    (-4, 16),
+    (-5, 25)
+]
 
-print("All test cases passed!")
+# Run the test cases
+for num, expected_result in test_cases:
+    result = square_number(num)
+    assert result == expected_result, f"Test failed for input {num}, expected {expected_result}, got {result}"
 
-# Define the final_answer function to avoid the NameError
-def final_answer(answer):
-    print(f"The final answer is: {answer}")
+# Define final_answer function
+def final_answer(solution):
+    print(f"The final answer is: {solution}")
 
-final_answer("def square_number(number):\n    return number * number")
+# If all tests pass, submit the final answer
+final_answer("def square_number(num):\n    return num ** 2")
