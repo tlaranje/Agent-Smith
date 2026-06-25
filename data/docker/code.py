@@ -1,25 +1,25 @@
-
-def final_answer(answer_string: str):
-    with open("/tmp/agent/final_result.py", "w", encoding="utf-8") as f:
-        f.write(answer_string)
-
-# Define the function to return the square of a number
-def square_number(num):
+def square_number(number):
     """
-    This function calculates the square of a given number.
+    This function takes a number as input and returns its square.
 
     Args:
-        num (int or float): The number to be squared.
+        number: The input number.
 
     Returns:
-        int or float: The square of the input number.
+        The square of the input number.
     """
-    return num ** 2
+    return number * number
 
-# Test the function with some examples
-print(square_number(5))  # Expected output: 25
-print(square_number(3.5))  # Expected output: 12.25
-print(square_number(-4))  # Expected output: 16
+# Test cases
+assert square_number(5) == 25, f"Test Failed: Expected 25, got {square_number(5)}"
+assert square_number(0) == 0, f"Test Failed: Expected 0, got {square_number(0)}"
+assert square_number(-3) == 9, f"Test Failed: Expected 9, got {square_number(-3)}"
+assert square_number(1.5) == 2.25, f"Test Failed: Expected 2.25, got {square_number(1.5)}"
 
-# If tests pass, call this to finish the task:
-final_answer("def square_number(num):\n    return num ** 2")
+print("All test cases passed!")
+
+# Define the final_answer function to avoid the NameError
+def final_answer(answer):
+    print(f"The final answer is: {answer}")
+
+final_answer("def square_number(number):\n    return number * number")

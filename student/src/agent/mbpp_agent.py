@@ -1,11 +1,8 @@
-from src.APIs import GeminiAPI, GroqAPI, CohereAPI
-from pydantic import BaseModel, Field
 from typing import Any, Optional, List
-from rich import print
-from datetime import datetime
+from pydantic import BaseModel, Field
 from ..parser import MBPPTaskInput
+from datetime import datetime
 import time
-
 import re
 
 SYSTEM_PROMPT = """
@@ -71,9 +68,11 @@ class SolutionOutput(BaseModel):
 
 
 class MBPPAgent:
-    def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
+    def __init__(self, sandbox, llms, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
+
         self.sandbox.build("..")
+
         self.max_iterations: int = max_iterations
         self.llms: list[Any] = llms
         self.llm: Any = self.llms[0]

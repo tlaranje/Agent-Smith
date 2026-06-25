@@ -12,7 +12,7 @@ class LLMResponse(BaseModel):
     model_name: str
 
 
-def get_llms(model_name: str) -> list[Any]:
+def get_llms(model_name: str = "gemini") -> list[Any]:
     models = {
         "gemini": GeminiAPI,
         "groq": GroqAPI,

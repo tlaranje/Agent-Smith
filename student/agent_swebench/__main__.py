@@ -3,12 +3,7 @@ from pathlib import Path
 from src.agent import SWEBenchAgent
 from src.parser import SWEBenchTaskInput
 from src.sandbox import Sandbox
-from src.APIs import (
-    GeminiAPI,
-    GroqAPI,
-    CohereAPI,
-    get_llms
-)
+from src.APIs import get_llms
 
 
 def main() -> None:
@@ -31,7 +26,7 @@ def main() -> None:
     task: SWEBenchTaskInput = SWEBenchTaskInput.from_file(
         args.task_file
     )
-    sandbox: Sandbox = Sandbox(task.docker_image)
+    sandbox: Sandbox = Sandbox("SWE_BENCH", task.docker_image)
     agent: SWEBenchAgent = SWEBenchAgent(
         get_llms(args.model_name), sandbox
     )
