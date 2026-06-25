@@ -445,7 +445,6 @@ class SWEBenchAgent:
         ]
 
         self.sandbox.start()
-        self.sandbox.enter()
 
         try:
             for iteration in range(self.max_iterations):
@@ -499,7 +498,9 @@ class SWEBenchAgent:
                         steps=steps,
                     )
 
-                tool_output = self.dispatch_tool(tool_name, tool_args)
+                tool_output = self.sandbox.mcp_client.call_tool(
+                    tool_name, args=tool_args
+                )
 
                 steps.append(StepMetrics(
                     step=iteration + 1,
@@ -522,7 +523,7 @@ class SWEBenchAgent:
         finally:
             self.sandbox.stop()
 
-        patch = self.sandbox.get_patch()
+        patch = self.sandbox.mcp_client.call_tool("get_patch")
         return SolutionOutput(
             task_id=task.instance_id,
             benchmark="swebench",
