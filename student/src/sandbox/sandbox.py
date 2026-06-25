@@ -168,6 +168,18 @@ class Sandbox:
             #     "running.[/bold yellow]"
             # )
 
+    def pull(self) -> None:
+        """Pull a pre-built image from Docker Hub"""
+        print(
+            f"[bold blue][*][/bold blue] Pulling image '[cyan]{self.image}[/cyan]'...")
+        try:
+            self.client.images.pull(self.image)
+            print("[bold green][+][/bold green] Image pulled successfully.")
+        except docker.errors.ImageNotFound:
+            raise RuntimeError(f"Image not found on Docker Hub: {self.image}")
+        except Exception as e:
+            raise e
+
     def enter(self) -> None:
         if not self.container:
             # print(

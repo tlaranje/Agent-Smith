@@ -420,7 +420,7 @@ class SolutionOutput(BaseModel):
 class SWEBenchAgent:
     def __init__(self, llms, sandbox, max_iterations: int = 10) -> None:
         self.sandbox = sandbox
-        self.sandbox.build("..")
+        self.sandbox.pull()
         self.max_iterations: int = max_iterations
         self.llms: list[Any] = llms
         self.llm: Any = self.llms[0]
