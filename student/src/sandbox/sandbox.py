@@ -1,7 +1,7 @@
-from .sandbox_config import SandboxConfig
 from ..mcp import MCPClient
 from pathlib import Path
 from typing import Any
+import contextlib
 import docker
 import io
 import os
@@ -20,6 +20,7 @@ class Sandbox:
         server_env = dict(os.environ)
         server_env["IS_MCP_SERVER"] = "1"
 
+        self.agent = agent
         if agent == "MBPP":
             self.mcp_client = MCPClient(
                 command="uv",
@@ -33,11 +34,26 @@ class Sandbox:
                 env=server_env
             )
 
-        # self.build_namespace()
-
     def _final_answer(self, answer_string: str):
         with open("/tmp/agent/final_result.py", "w", encoding="utf-8") as f:
             f.write(answer_string)
+
+    def _restricted_builtins(self) -> dict:
+        import builtins
+        safe_builtins = {}
+        allowed = [
+            'abs', 'all', 'any', 'bin', 'bool', 'chr', 'dict', 'divmod',
+            'enumerate', 'filter', 'float', 'format', 'hash', 'hex', 'id',
+            'int', 'isinstance', 'issubclass', 'iter', 'len', 'list', 'map',
+            'max', 'min', 'next', 'oct', 'ord', 'pow', 'print', 'range',
+            'repr', 'reversed', 'round', 'set', 'slice', 'sorted', 'str',
+            'sum', 'tuple', 'type', 'zip', 'Exception', 'ValueError',
+            'TypeError', 'AssertionError', 'IndexError', 'KeyError'
+        ]
+        for name in allowed:
+            if hasattr(builtins, name):
+                safe_builtins[name] = getattr(builtins, name)
+        return safe_builtins
 
     def build_namespace(self) -> dict:
         namespace = {"__builtins__": self._restricted_builtins()}
@@ -45,46 +61,26 @@ class Sandbox:
         namespace["final_answer"] = self._final_answer
         return namespace
 
-    def execute(
-        self, code: str, test_list: list[str] | None = None
-    ) -> tuple[str, bool]:
+    def execute(self, code: str, test_list: list[str]) -> tuple[str, bool]:
+        global_vars = self.build_namespace()
+        local_vars = {}
+
+        stdout_capture = io.StringIO()
+
         try:
-            SandboxConfig().validate_code(code)
-        except Exception as e:
-            return (
-                f"[bold red]{e}[/bold red]", False
-            )
+            with contextlib.redirect_stdout(stdout_capture), \
+                 contextlib.redirect_stderr(stdout_capture):
+                exec(code, global_vars, local_vars)
 
-        self.container.exec_run("rm -f /tmp/agent/final_result.py")
+                for test in test_list:
+                    exec(test, global_vars, local_vars)
 
-        if test_list:
-            code += "\n\n# --- AUTOMATED TESTS ---\n"
-            for test in test_list:
-                code += f"{test}\n"
-
-        with open("../data/docker/code.py", "w", encoding="utf-8") as f:
-            f.write(code)
-
-        res = self.container.exec_run("python3 /sandbox/code.py")
-        output = res.output.decode("utf-8")
-
-        if res.exit_code != 0:
-            # print(
-            #     "[bold red][!] The execution failed or failed "
-            #     "in a test assert:[/bold red]"
-            # )
-            # print(f"[red]{output.strip()}[/red]")
-            return output, False
-        elif res.exit_code == 0:
-            return '"""\n' + code + '"""', True
-
-        check = self.container.exec_run("python3 /tmp/agent/final_result.py")
-
-        if check.exit_code == 0:
-            self.container.exec_run("rm -f /tmp/agent/final_result.py")
+            output = stdout_capture.getvalue()
             return output, True
 
-        return output, False
+        except Exception as e:
+            output = stdout_capture.getvalue() + f"\nException raised: {e}"
+            return output, False
 
     # Docker
     def build(self, path: str = ".") -> None:
@@ -138,10 +134,6 @@ class Sandbox:
 
     def start(self) -> None:
         if not self.container:
-            # print(
-            #    f"[bold blue][*][/bold blue] Starting sandbox container from "
-            #     f"image '[cyan]{self.image}[/cyan]'..."
-            # )
             try:
                 self.container = self.client.containers.run(
                     self.image,
@@ -153,27 +145,34 @@ class Sandbox:
                         "mode": "rw"
                     }}
                 )
-                # c_id = self.container.short_id
-                # print(
-                #     f"[bold green][+][/bold green] Sandbox online. "
-                #     f"Container ID: [bold magenta]{c_id}[/bold magenta]"
-                # )
+
+                root_path = Path(__file__).parent.parent.parent.parent
+                server_env = dict(os.environ)
+                server_env["IS_MCP_SERVER"] = "1"
+                server_env["DOCKER_CONTAINER_ID"] = self.container.id
+
+                if self.agent == "MBPP":
+                    self.mcp_client = MCPClient(
+                        command="uv",
+                        args=[
+                            "run", "python", f"{root_path}/mcp_tools_mbpp.py"
+                        ],
+                        env=server_env
+                    )
+                elif self.agent == "SWE_BENCH":
+                    self.mcp_client = MCPClient(
+                        command="uv",
+                        args=[
+                            "run", "python",
+                            f"{root_path}/mcp_tools_swe_bench.py"
+                        ],
+                        env=server_env
+                    )
             except Exception as e:
-                # print(
-                #     f"[bold red][-] Failed to start sandbox container: "
-                #     f"{e}[/bold red]"
-                # )
                 raise e
-        # else:
-            # print(
-            #     "[bold yellow][!] Sandbox container is already "
-            #     "running.[/bold yellow]"
-            # )
 
     def pull(self) -> None:
         """Pull a pre-built image from Docker Hub"""
-        print(
-            f"[bold blue][*][/bold blue] Pulling image '[cyan]{self.image}[/cyan]'...")
         try:
             self.client.images.pull(self.image)
             print("[bold green][+][/bold green] Image pulled successfully.")
@@ -184,52 +183,17 @@ class Sandbox:
 
     def enter(self) -> None:
         if not self.container:
-            # print(
-            #     "[bold red][-] Container is not running. "
-            #     "Cannot enter sandbox.[/bold red]"
-            # )
             return
-
-        # c_id = self.container.short_id
-        # print(
-        #     f"\n[bold green][>>>] Entering Sandbox ({c_id}). "
-        #     f"Type 'exit' to log out.[/bold green]"
-        # )
-        # print("[bold green]" + "=" * 60 + "[/bold green]")
 
         os.system(f"docker exec -it {self.container.id} bash")
 
-        # print("[bold green]" + "=" * 60 + "[/bold green]")
-        # print(
-        #     "[bold green][<<<] Exited Sandbox. "
-        #     "Returned to host system.[/bold green]\n"
-        # )
-
     def stop(self) -> None:
         if self.container:
-            # c_id = self.container.short_id
-            # print(
-            #     f"[bold blue][*][/bold blue] Stopping sandbox container "
-            #     f"([bold magenta]{c_id}[/bold magenta])..."
-            # )
             try:
                 self.container.stop()
                 self.container = None
-                # print(
-                #     "[bold green][+][/bold green] Sandbox container "
-                #     "stopped and removed successfully."
-                # )
             except Exception as e:
-                # print(
-                #     f"[bold red][-] Error while stopping container: "
-                #     f"{e}[/bold red]"
-                # )
                 raise e
-        # else:
-            # print(
-            #     "[bold yellow][!] No active sandbox container "
-            #     "to stop.[/bold yellow]"
-            # )
 
     def _exec(self, cmd: str) -> tuple[str, int]:
         """Run a bash command inside the container, same pattern as your

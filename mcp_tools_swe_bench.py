@@ -1,12 +1,36 @@
+import os
+import docker
 from contextlib import asynccontextmanager
-from student.src.sandbox import Sandbox
 from mcp.server.fastmcp import FastMCP, Context
+
+
+class SharedSandboxWrapper:
+    def __init__(self, container):
+        self.container = container
+        self.eval_script = ""
+
+    def _exec(self, cmd: str) -> tuple[str, int]:
+        result = self.container.exec_run(["bash", "-c", cmd])
+        output = result.output.decode("utf-8") if result.output else ""
+        return output, result.exit_code
+
+    def _write_file(self, filepath: str, content: str) -> None:
+        escaped_content = content.replace("'", "'\\''")
+        cmd = f"cat << 'EOF' > {filepath}\n{escaped_content}\nEOF"
+        self.container.exec_run(["bash", "-c", cmd])
 
 
 @asynccontextmanager
 async def lifespan(server):
-    sandbox = Sandbox("SWE_BENCH")
-    yield {"sandbox": sandbox}
+    container_id = os.environ.get("DOCKER_CONTAINER_ID")
+    if container_id:
+        client = docker.from_env()
+        container = client.containers.get(container_id)
+        sandbox_mock = SharedSandboxWrapper(container)
+        yield {"sandbox": sandbox_mock}
+    else:
+        yield {"sandbox": None}
+
 
 mcp = FastMCP("swebench-tools", lifespan=lifespan)
 
@@ -16,8 +40,10 @@ def read_file(
     filepath: str, ctx: Context, start_line: int | None = None,
     end_line: int | None = None
 ) -> str:
-    """Read file with line numbers in cat -n format."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     out, code = sandbox._exec(f"cat {filepath}")
     if code != 0:
         return f"ERROR: Could not read {filepath}: {out}"
@@ -35,8 +61,10 @@ def read_file(
 
 @mcp.tool()
 def edit_file(filepath: str, old_str: str, new_str: str, ctx: Context) -> str:
-    """Replace exact old_str with new_str in a file."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     out, code = sandbox._exec(f"cat {filepath}")
     if code != 0:
         return f"ERROR: Could not read {filepath}: {out}"
@@ -57,8 +85,10 @@ def edit_file(filepath: str, old_str: str, new_str: str, ctx: Context) -> str:
 
 @mcp.tool()
 def list_files(directory: str, ctx: Context, pattern: str = "*") -> str:
-    """List files in a directory matching a pattern."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     out, code = sandbox._exec(
         f"find {directory} -name '{pattern}' -type f | sort"
     )
@@ -69,8 +99,10 @@ def list_files(directory: str, ctx: Context, pattern: str = "*") -> str:
 
 @mcp.tool()
 def search_code(pattern: str, ctx: Context, file_pattern: str = "*.py") -> str:
-    """grep-like search."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     cmd = f"grep -rn --include='{file_pattern}' '{pattern}' /testbed"
     out, _ = sandbox._exec(cmd)
     return out or "No matches found."
@@ -80,8 +112,10 @@ def search_code(pattern: str, ctx: Context, file_pattern: str = "*.py") -> str:
 def search_function_or_class_definition_in_code(
     name: str, ctx: Context
 ) -> str:
-    """Find def <name> or class <name>."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     cmd = f"grep -rn --include='*.py' -E '^(def {name}|class {name})' /testbed"
     out, _ = sandbox._exec(cmd)
     if not out:
@@ -98,8 +132,10 @@ def find_references(
     name: str, ctx: Context, filepath: str | None = None,
     line: int | None = None
 ) -> str:
-    """Find all usages of a symbol."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     search_path = filepath if filepath else "/testbed"
     cmd = f"grep -rn --include='*.py' '\\b{name}\\b' {search_path}"
     out, _ = sandbox._exec(cmd)
@@ -108,8 +144,10 @@ def find_references(
 
 @mcp.tool()
 def run_tests(ctx: Context) -> str:
-    """Execute the evaluation script stored at start() time."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     sandbox._write_file("/tmp/eval_script.sh", sandbox.eval_script)
     out, code = sandbox._exec("bash /tmp/eval_script.sh")
     return f"Exit code: {code}\n{out}"
@@ -117,16 +155,20 @@ def run_tests(ctx: Context) -> str:
 
 @mcp.tool()
 def get_patch(ctx: Context) -> str:
-    """Retrieve the unified git diff of all changes made to /testbed."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     out, _ = sandbox._exec("cd /testbed && git -c core.fileMode=false diff")
     return out
 
 
 @mcp.tool()
 def run_command(command: str, ctx: Context, workdir: str = "/testbed") -> str:
-    """Execute a shell command in the specified working directory."""
-    sandbox: Sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     out, code = sandbox._exec(f"cd {workdir} && {command}")
     return f"Exit code: {code}\nOutput:\n{out}"
 
