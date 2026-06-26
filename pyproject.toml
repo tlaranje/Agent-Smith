@@ -16,6 +16,7 @@ dependencies = [
     "dotenv",
     "groq",
     "cohere",
+	"openai",
     "mcp",
     "fastmcp>=3.4.2",
 ]

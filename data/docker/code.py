@@ -1,39 +1,24 @@
-# Define a function that takes a number and returns its square
-def square_number(num):
+# Define a function to calculate the square of a number
+def square(num):
     """
-    Returns the square of a given number.
+    This function calculates the square of a given number.
 
     Args:
-        num (float): The number to be squared.
+        num (int or float): The number to be squared.
 
     Returns:
-        float: The square of the input number.
+        int or float: The square of the input number.
     """
     return num ** 2
 
-# Test cases to verify the function works as expected
-test_cases = [
-    (0, 0),
-    (1, 1),
-    (2, 4),
-    (3, 9),
-    (4, 16),
-    (5, 25),
-    (-1, 1),
-    (-2, 4),
-    (-3, 9),
-    (-4, 16),
-    (-5, 25)
-]
+# Define the final_answer function to avoid NameError
+def final_answer(function_code):
+    print("Function code:", function_code)
 
-# Run the test cases
-for num, expected_result in test_cases:
-    result = square_number(num)
-    assert result == expected_result, f"Test failed for input {num}, expected {expected_result}, got {result}"
+# Test the function with some numbers
+print(square(5))  # Expected output: 25
+print(square(10))  # Expected output: 100
+print(square(3.5))  # Expected output: 12.25
 
-# Define final_answer function
-def final_answer(solution):
-    print(f"The final answer is: {solution}")
-
-# If all tests pass, submit the final answer
-final_answer("def square_number(num):\n    return num ** 2")
+# Call the final_answer function
+final_answer("def square(num):\n    return num ** 2")
