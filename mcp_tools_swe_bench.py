@@ -1,9 +1,15 @@
 from mcp.server.fastmcp import FastMCP
 import docker
 import os
+import docker
+from contextlib import asynccontextmanager
+from mcp.server.fastmcp import FastMCP, Context
 
-mcp = FastMCP("swebench-tools")
 
+class SharedSandboxWrapper:
+    def __init__(self, container):
+        self.container = container
+        self.eval_script = ""
 
 class ContainerShim:
     def __init__(self, container_id: str) -> None:
@@ -28,6 +34,10 @@ class SWEBenchToolState:
     def __init__(self, sandbox: ContainerShim | None) -> None:
         self.sandbox = sandbox
 
+    def _write_file(self, filepath: str, content: str) -> None:
+        escaped_content = content.replace("'", "'\\''")
+        cmd = f"cat << 'EOF' > {filepath}\n{escaped_content}\nEOF"
+        self.container.exec_run(["bash", "-c", cmd])
 
 if os.environ.get("IS_MCP_SERVER"):
     container_id = os.environ.get("SANDBOX_CONTAINER_ID", "")
@@ -42,16 +52,14 @@ else:
 
 @mcp.tool()
 def read_file(
-    filepath: str,
-    start_line: int | None = None,
-    end_line: int | None = None,
+    filepath: str, ctx: Context, start_line: int | None = None,
+    end_line: int | None = None
 ) -> str:
-    """
-    Read file with line numbers in cat -n format:
-        1  line one
-        2  line two
-    """
-    out, code = _state.sandbox._exec(f"cat {filepath}")
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
+    out, code = sandbox._exec(f"cat {filepath}")
     if code != 0:
         return f"ERROR: Could not read {filepath}: {out}"
 
@@ -63,38 +71,40 @@ def read_file(
     result = []
     for i, line in enumerate(selected, start=start + 1):
         result.append(f"{i:6}\t{line}")
-
     return "\n".join(result)
 
 
 @mcp.tool()
-def edit_file(filepath: str, old_str: str, new_str: str) -> str:
-    """Replace exact old_str with new_str in a file."""
-    out, code = _state.sandbox._exec(f"cat {filepath}")
+def edit_file(filepath: str, old_str: str, new_str: str, ctx: Context) -> str:
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
+    out, code = sandbox._exec(f"cat {filepath}")
     if code != 0:
         return f"ERROR: Could not read {filepath}: {out}"
-
     if old_str not in out:
         return (
-            f"ERROR: old_str not found in {filepath}. "
-            "Make sure it matches exactly including "
-            "indentation and whitespace."
+            f"ERROR: old_str not found in {filepath}. Make sure it "
+            "matches exactly including indentation and whitespace."
         )
     if out.count(old_str) > 1:
         return (
             f"ERROR: old_str matches {out.count(old_str)} locations in "
             f"{filepath}. Make it more specific."
         )
-
     new_content = out.replace(old_str, new_str, 1)
-    _state.sandbox._write_file(filepath, new_content)
+    sandbox._write_file(filepath, new_content)
     return f"OK: {filepath} updated successfully."
 
 
 @mcp.tool()
-def list_files(directory: str, pattern: str = "*") -> str:
-    """List files in a directory matching a pattern."""
-    out, code = _state.sandbox._exec(
+def list_files(directory: str, ctx: Context, pattern: str = "*") -> str:
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
+    out, code = sandbox._exec(
         f"find {directory} -name '{pattern}' -type f | sort"
     )
     if code != 0:
@@ -103,54 +113,58 @@ def list_files(directory: str, pattern: str = "*") -> str:
 
 
 @mcp.tool()
-def search_code(pattern: str, file_pattern: str = "*.py") -> str:
-    """
-    grep-like search. Output format:
-        /absolute/path_to_file.py:<line>:<match>
-    """
+def search_code(pattern: str, ctx: Context, file_pattern: str = "*.py") -> str:
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     cmd = f"grep -rn --include='{file_pattern}' '{pattern}' /testbed"
-    out, _ = _state.sandbox._exec(cmd)
+    out, _ = sandbox._exec(cmd)
     return out or "No matches found."
 
 
 @mcp.tool()
-def search_function_or_class_definition_in_code(name: str) -> str:
-    """
-    Find def <name> or class <name>.
-    """
-    cmd = f"grep -rn --include='*.py' -E '^(def {name}|class {name})' /testbed"
-    out, _ = _state.sandbox._exec(cmd)
+def search_function_or_class_definition_in_code(
+    name: str, ctx: Context
+) -> str:
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
 
+    cmd = f"grep -rn --include='*.py' -E '^(def {name}|class {name})' /testbed"
+    out, _ = sandbox._exec(cmd)
     if not out:
         cmd = (
-            f"grep -rn --include='*.py' -E '(def {name}|class {name})\\b' "
-            "/testbed"
+            "grep -rn --include='*.py' -E "
+            f"'(def {name}|class {name})\\b' /testbed"
         )
-        out, _ = _state.sandbox._exec(cmd)
-
+        out, _ = sandbox._exec(cmd)
     return out or f"No definition found for '{name}'."
 
 
 @mcp.tool()
 def find_references(
-    name: str,
-    filepath: str | None = None,
-    line: int | None = None,
+    name: str, ctx: Context, filepath: str | None = None,
+    line: int | None = None
 ) -> str:
-    """Find all usages of a symbol."""
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
     search_path = filepath if filepath else "/testbed"
     cmd = f"grep -rn --include='*.py' '\\b{name}\\b' {search_path}"
-    out, _ = _state.sandbox._exec(cmd)
+    out, _ = sandbox._exec(cmd)
     return out or f"No references found for '{name}'."
 
 
 @mcp.tool()
-def run_tests() -> str:
-    """Execute the evaluation script stored at start() time."""
-    _state.sandbox._write_file(
-        "/tmp/eval_script.sh", _state.sandbox.eval_script
-    )
-    out, code = _state.sandbox._exec("bash /tmp/eval_script.sh")
+def run_tests(ctx: Context) -> str:
+    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
+    sandbox._write_file("/tmp/eval_script.sh", sandbox.eval_script)
+    out, code = sandbox._exec("bash /tmp/eval_script.sh")
     return f"Exit code: {code}\n{out}"
 
 

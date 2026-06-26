@@ -1,6 +1,7 @@
 from .gemini import GeminiAPI
 from .groq import GroqAPI
 from .cohere import CohereAPI
+from .open_router import OpenRouterAPI
 from pydantic import BaseModel
 from typing import Any
 
@@ -17,6 +18,7 @@ def get_llms(model_name: str = "gemini") -> list[Any]:
         "gemini": GeminiAPI,
         "groq": GroqAPI,
         "cohere": CohereAPI,
+        "open_router": OpenRouterAPI
     }
 
     if model_name not in models:
