@@ -1,3 +1,5 @@
+from mcp.server.fastmcp import FastMCP
+import docker
 import os
 import docker
 from contextlib import asynccontextmanager
@@ -9,30 +11,43 @@ class SharedSandboxWrapper:
         self.container = container
         self.eval_script = ""
 
+class ContainerShim:
+    def __init__(self, container_id: str) -> None:
+        client = docker.from_env()
+        self._container = client.containers.get(container_id)
+        self.eval_script: str = ""
+
     def _exec(self, cmd: str) -> tuple[str, int]:
-        result = self.container.exec_run(["bash", "-c", cmd])
+        result = self._container.exec_run(["bash", "-c", cmd])
         output = result.output.decode("utf-8") if result.output else ""
         return output, result.exit_code
+
+    def _write_file(self, filepath: str, content: str) -> None:
+        import base64
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        self._exec(
+            f"echo {encoded} | base64 -d > {filepath}"
+        )
+
+
+class SWEBenchToolState:
+    def __init__(self, sandbox: ContainerShim | None) -> None:
+        self.sandbox = sandbox
 
     def _write_file(self, filepath: str, content: str) -> None:
         escaped_content = content.replace("'", "'\\''")
         cmd = f"cat << 'EOF' > {filepath}\n{escaped_content}\nEOF"
         self.container.exec_run(["bash", "-c", cmd])
 
-
-@asynccontextmanager
-async def lifespan(server):
-    container_id = os.environ.get("DOCKER_CONTAINER_ID")
-    if container_id:
-        client = docker.from_env()
-        container = client.containers.get(container_id)
-        sandbox_mock = SharedSandboxWrapper(container)
-        yield {"sandbox": sandbox_mock}
-    else:
-        yield {"sandbox": None}
-
-
-mcp = FastMCP("swebench-tools", lifespan=lifespan)
+if os.environ.get("IS_MCP_SERVER"):
+    container_id = os.environ.get("SANDBOX_CONTAINER_ID", "")
+    if not container_id:
+        raise RuntimeError(
+            "IS_MCP_SERVER=1 mas SANDBOX_CONTAINER_ID não está definido."
+        )
+    _state = SWEBenchToolState(sandbox=ContainerShim(container_id))
+else:
+    _state = SWEBenchToolState(sandbox=None)
 
 
 @mcp.tool()
@@ -154,22 +169,9 @@ def run_tests(ctx: Context) -> str:
 
 
 @mcp.tool()
-def get_patch(ctx: Context) -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
-    if not sandbox:
-        return "ERROR: No active sandbox container session found."
-
-    out, _ = sandbox._exec("cd /testbed && git -c core.fileMode=false diff")
-    return out
-
-
-@mcp.tool()
-def run_command(command: str, ctx: Context, workdir: str = "/testbed") -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
-    if not sandbox:
-        return "ERROR: No active sandbox container session found."
-
-    out, code = sandbox._exec(f"cd {workdir} && {command}")
+def run_command(command: str, workdir: str = "/testbed") -> str:
+    """Execute a shell command in the specified working directory."""
+    out, code = _state.sandbox._exec(f"cd {workdir} && {command}")
     return f"Exit code: {code}\nOutput:\n{out}"
 
 

@@ -523,7 +523,7 @@ class SWEBenchAgent:
         finally:
             self.sandbox.stop()
 
-        patch = self.sandbox.mcp_client.call_tool("get_patch")
+        patch = self.sandbox.get_patch()
         return SolutionOutput(
             task_id=task.instance_id,
             benchmark="swebench",
