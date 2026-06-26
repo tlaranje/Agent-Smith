@@ -112,13 +112,12 @@ class MBPPAgent:
                 if "final_answer(" in code:
                     import io
                     import contextlib
-                    global_vars = self.sandbox.build_namespace()
-                    local_vars = {}
                     stdout_capture = io.StringIO()
                     try:
+                        namespace = self.sandbox.build_namespace()
                         with contextlib.redirect_stdout(stdout_capture), \
                              contextlib.redirect_stderr(stdout_capture):
-                            exec(code, global_vars, local_vars)
+                            exec(code, namespace, namespace)
                         done = True
                         sandbox_output = "Task completed using final_answer."
                     except Exception as e:
@@ -151,7 +150,7 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        solution=sandbox_output,
+                        solution=code,
                         system_prompt=SYSTEM_PROMPT,
                         iterations=iteration + 1,
                         total_requests=total_requests,

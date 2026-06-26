@@ -15,6 +15,8 @@ class OpenRouterAPI:
             base_url="https://openrouter.ai/api/v1",
         )
 
+        self.api_url: str = ""
+
     def generate_messages(self, messages: list[dict]) -> Any:
         from . import LLMResponse
 
