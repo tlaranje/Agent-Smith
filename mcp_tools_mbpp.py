@@ -1,32 +1,81 @@
-from contextlib import asynccontextmanager
-from student.src.sandbox import Sandbox
-from mcp.server.fastmcp import FastMCP, Context
 import os
+import docker
+from contextlib import asynccontextmanager
+from mcp.server.fastmcp import FastMCP, Context
+
+
+class SharedSandboxWrapper:
+    def __init__(self, container):
+        self.container = container
+
+    def execute(self, code: str, test_list: list[str]) -> tuple[str, bool]:
+        import io
+        import contextlib
+
+        global_vars = {"__builtins__": __builtins__}
+        local_vars = {}
+        stdout_capture = io.StringIO()
+
+        try:
+            with contextlib.redirect_stdout(stdout_capture), \
+                 contextlib.redirect_stderr(stdout_capture):
+                exec(code, global_vars, local_vars)
+                for test in test_list:
+                    exec(test, global_vars, local_vars)
+            return stdout_capture.getvalue(), True
+        except Exception as e:
+            return stdout_capture.getvalue() + f"Exception raised: {e}", False
 
 
 @asynccontextmanager
 async def lifespan(server):
-    if os.environ.get("IS_MCP_SERVER"):
-        yield {}
+    container_id = os.environ.get("DOCKER_CONTAINER_ID")
+    if container_id:
+        client = docker.from_env()
+        container = client.containers.get(container_id)
+        sandbox_mock = SharedSandboxWrapper(container)
+        yield {
+            "sandbox": sandbox_mock,
+            "current_task_tests": []
+        }
     else:
-        sandbox = Sandbox("SWE_BENCH")
-        yield {"sandbox": sandbox}
+        yield {
+            "sandbox": None,
+            "current_task_tests": []
+        }
+
 
 mcp = FastMCP("mbpp-tools", lifespan=lifespan)
 
 
 @mcp.tool()
-def set_current_task_tests(test_list: list[str], ctx: Context) -> str:
+def set_current_task_tests(
+    ctx: Context, test_list: list[str] | None = None, **kwargs
+) -> str:
+    if "args" in kwargs and isinstance(kwargs["args"], dict):
+        test_list = kwargs["args"].get("test_list", test_list)
+
+    if test_list is None:
+        return "ERROR: test_list is required."
+
     ctx.request_context.lifespan_context["current_task_tests"] = test_list
     return f"Task configured successfully with {len(test_list)} tests."
 
 
 @mcp.tool()
-def run_tests(code: str, ctx: Context) -> str:
-    lc = ctx.request_context.lifespan_context
-    current_task_tests = lc["current_task_tests"]
-    sandbox: Sandbox = lc["sandbox"]
+def run_tests(ctx: Context, code: str | None = None, **kwargs) -> str:
+    if "args" in kwargs and isinstance(kwargs["args"], dict):
+        code = kwargs["args"].get("code", code)
 
+    if code is None:
+        return "ERROR: code is required."
+
+    lc = ctx.request_context.lifespan_context
+    sandbox = lc.get("sandbox")
+    if not sandbox:
+        return "ERROR: No active sandbox container session found."
+
+    current_task_tests = lc.get("current_task_tests", [])
     if not current_task_tests:
         return (
             "Error: No active task. Call set_current_task_tests "

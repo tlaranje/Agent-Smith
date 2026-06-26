@@ -499,7 +499,7 @@ class SWEBenchAgent:
                     )
 
                 tool_output = self.sandbox.mcp_client.call_tool(
-                    tool_name, args=tool_args
+                    tool_name, **tool_args
                 )
 
                 steps.append(StepMetrics(
