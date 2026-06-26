@@ -42,11 +42,11 @@ class MCPClient:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    async def _call_tool_async(self, name: str, **kwargs) -> str:
+    async def _call_tool_async(self, name: str, /, **kwargs) -> str:
         result = await self._session.call_tool(name, arguments=kwargs)
         return result.content[0].text
 
-    def call_tool(self, name: str, **kwargs) -> str:
+    def call_tool(self, name: str, /, **kwargs) -> str:
         future = asyncio.run_coroutine_threadsafe(
             self._call_tool_async(name, **kwargs), self._loop
         )

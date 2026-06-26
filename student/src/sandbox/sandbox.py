@@ -12,28 +12,35 @@ class Sandbox:
         self, agent: str = "MBPP", image: str = "agent_sandbox:latest"
     ) -> None:
         self.image = image
+        self.agent = agent
         self.client = docker.from_env()
         self.container: Any = None
+        self.mcp_client: MCPClient | None = None
 
-        root_path = Path(__file__).parent.parent.parent.parent
+        self._root_path = Path(__file__).parent.parent.parent.parent
 
-        server_env = dict(os.environ)
-        server_env["IS_MCP_SERVER"] = "1"
-
+        # MBPP: MCP server não precisa de aceder ao container Docker,
+        # por isso pode ser lançado imediatamente.
+        # SWE_BENCH: o MCP server precisa do container ID, que só existe
+        # depois de start()/pull(). O MCPClient é criado em _start_mcp_client().
         if agent == "MBPP":
+            server_env = dict(os.environ)
+            server_env["IS_MCP_SERVER"] = "1"
             self.mcp_client = MCPClient(
                 command="uv",
-                args=["run", "python", f"{root_path}/mcp_tools_mbpp.py"],
+                args=["run", "python", f"{self._root_path}/mcp_tools_mbpp.py"],
                 env=server_env
             )
-        elif agent == "SWE_BENCH":
-            self.mcp_client = MCPClient(
-                command="uv",
-                args=["run", "python", f"{root_path}/mcp_tools_swe_bench.py"],
-                env=server_env
-            )
+
+    def get_patch(self) -> str:
+        """Retrieve the unified git diff of all changes made to /testbed."""
+        out, _ = self._exec(
+            "cd /testbed && git -c core.fileMode=false diff"
+        )
+        return out
 
     def _final_answer(self, answer_string: str):
+        os.makedirs("/tmp/agent", exist_ok=True)
         with open("/tmp/agent/final_result.py", "w", encoding="utf-8") as f:
             f.write(answer_string)
 
@@ -46,14 +53,24 @@ class Sandbox:
     def execute(
         self, code: str, test_list: list[str] | None = None
     ) -> tuple[str, bool]:
-        try:
-            SandboxConfig().validate_code(code)
-        except Exception as e:
+        if not SandboxConfig().validate_code(code):
             return (
-                f"[bold red]{e}[/bold red]", False
+                "[bold red]Code rejected: disallowed import, "
+                "file path, or use of eval/exec.[/bold red]",
+                False,
             )
 
         self.container.exec_run("rm -f /tmp/agent/final_result.py")
+
+        final_answer_shim = (
+            "import os as _os\n"
+            "def final_answer(answer_string):\n"
+            "    _os.makedirs('/tmp/agent', exist_ok=True)\n"
+            "    with open('/tmp/agent/final_result.py', 'w', "
+            "encoding='utf-8') as _f:\n"
+            "        _f.write(answer_string)\n\n"
+        )
+        code = final_answer_shim + code
 
         if test_list:
             code += "\n\n# --- AUTOMATED TESTS ---\n"
@@ -73,15 +90,25 @@ class Sandbox:
             # )
             # print(f"[red]{output.strip()}[/red]")
             return output, False
-        elif res.exit_code == 0:
-            return '"""\n' + code + '"""', True
 
-        check = self.container.exec_run("python3 /tmp/agent/final_result.py")
+        # Exit code 0 only means the script ran without raising.
+        # It does NOT mean final_answer() was called. We confirm that
+        # by checking whether final_result.py was written inside the
+        # container during this run.
+        check = self.container.exec_run(
+            "test -f /tmp/agent/final_result.py"
+        )
 
         if check.exit_code == 0:
+            answer_res = self.container.exec_run(
+                "cat /tmp/agent/final_result.py"
+            )
+            answer = answer_res.output.decode("utf-8")
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
-            return output, True
+            return answer, True
 
+        # Script ran fine (e.g. tests passed) but final_answer() was
+        # never called -> not done yet, keep iterating.
         return output, False
 
     # Docker
@@ -134,6 +161,21 @@ class Sandbox:
             # )
             raise e
 
+    def _start_mcp_client(self) -> None:
+        """Lança o MCPClient para SWE_BENCH depois do container existir.
+        Passa SANDBOX_CONTAINER_ID para o subprocesso MCP server poder
+        ligar-se ao container já criado via docker.from_env()."""
+        if self.agent != "SWE_BENCH" or self.mcp_client is not None:
+            return
+        server_env = dict(os.environ)
+        server_env["IS_MCP_SERVER"] = "1"
+        server_env["SANDBOX_CONTAINER_ID"] = self.container.id
+        self.mcp_client = MCPClient(
+            command="uv",
+            args=["run", "python", f"{self._root_path}/mcp_tools_swe_bench.py"],
+            env=server_env,
+        )
+
     def start(self) -> None:
         if not self.container:
             # print(
@@ -167,11 +209,10 @@ class Sandbox:
             #     "[bold yellow][!] Sandbox container is already "
             #     "running.[/bold yellow]"
             # )
+        self._start_mcp_client()
 
     def pull(self) -> None:
         """Pull a pre-built image from Docker Hub"""
-        print(
-            f"[bold blue][*][/bold blue] Pulling image '[cyan]{self.image}[/cyan]'...")
         try:
             self.client.images.pull(self.image)
             print("[bold green][+][/bold green] Image pulled successfully.")

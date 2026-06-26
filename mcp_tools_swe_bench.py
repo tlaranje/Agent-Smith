@@ -1,17 +1,41 @@
-from student.src.sandbox import Sandbox
 from mcp.server.fastmcp import FastMCP
+import docker
 import os
 
 mcp = FastMCP("swebench-tools")
 
 
+class ContainerShim:
+    def __init__(self, container_id: str) -> None:
+        client = docker.from_env()
+        self._container = client.containers.get(container_id)
+        self.eval_script: str = ""
+
+    def _exec(self, cmd: str) -> tuple[str, int]:
+        result = self._container.exec_run(["bash", "-c", cmd])
+        output = result.output.decode("utf-8") if result.output else ""
+        return output, result.exit_code
+
+    def _write_file(self, filepath: str, content: str) -> None:
+        import base64
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        self._exec(
+            f"echo {encoded} | base64 -d > {filepath}"
+        )
+
+
 class SWEBenchToolState:
-    def __init__(self, sandbox: Sandbox | None) -> None:
+    def __init__(self, sandbox: ContainerShim | None) -> None:
         self.sandbox = sandbox
 
 
-if not os.environ.get("IS_MCP_SERVER"):
-    _state = SWEBenchToolState(sandbox=Sandbox("SWE_BENCH"))
+if os.environ.get("IS_MCP_SERVER"):
+    container_id = os.environ.get("SANDBOX_CONTAINER_ID", "")
+    if not container_id:
+        raise RuntimeError(
+            "IS_MCP_SERVER=1 mas SANDBOX_CONTAINER_ID não está definido."
+        )
+    _state = SWEBenchToolState(sandbox=ContainerShim(container_id))
 else:
     _state = SWEBenchToolState(sandbox=None)
 
@@ -128,15 +152,6 @@ def run_tests() -> str:
     )
     out, code = _state.sandbox._exec("bash /tmp/eval_script.sh")
     return f"Exit code: {code}\n{out}"
-
-
-@mcp.tool()
-def get_patch() -> str:
-    """Retrieve the unified git diff of all changes made to /testbed."""
-    out, _ = _state.sandbox._exec(
-        "cd /testbed && git -c core.fileMode=false diff"
-    )
-    return out
 
 
 @mcp.tool()
