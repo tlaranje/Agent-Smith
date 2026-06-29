@@ -82,16 +82,22 @@ class Sandbox:
             for test in test_list:
                 code += f"{test}\n"
 
-        res = self.container.exec_run("python3 /sandbox/code.py")
+        res = self.container.exec_run(
+            "bash -lc 'timeout 60s python3 /sandbox/code.py'"
+        )
         output = res.output.decode("utf-8")
 
+        if res.exit_code == 124:
+            return (
+                "[TIMEOUT]\nExecution exceeded 60 seconds.",
+                False
+            )
+
         if res.exit_code != 0:
-            # print(
-            #     "[bold red][!] The execution failed or failed "
-            #     "in a test assert:[/bold red]"
-            # )
-            # print(f"[red]{output.strip()}[/red]")
-            return output, False
+            return (
+                f"[RUNTIME ERROR]\n{output}",
+                False
+            )
 
         # Exit code 0 only means the script ran without raising.
         # It does NOT mean final_answer() was called. We confirm that
