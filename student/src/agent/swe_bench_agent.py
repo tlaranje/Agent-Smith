@@ -1,10 +1,10 @@
-import json
-import re
+from ..parser import SWEBenchTaskInput
 from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
-from ..parser import SWEBenchTaskInput
+import json
 import time
+import re
 
 SYSTEM_PROMPT: str = """
 You are an expert software engineer tasked with fixing bugs in real
@@ -440,11 +440,15 @@ class SWEBenchAgent:
         total_input_tokens = 0
         total_output_tokens = 0
 
-        messages = [
-            {"role": "user", "content": self.build_initial_prompt(task)}
-        ]
-
         self.sandbox.start()
+        tools = self.sandbox.mcp_client.list_tools()
+
+        messages = [
+            {
+                "role": "user",
+                "content": self.build_initial_prompt(task, tools),
+            }
+        ]
 
         try:
             for iteration in range(self.max_iterations):
@@ -519,11 +523,10 @@ class SWEBenchAgent:
                 messages.append(
                     {"role": "user", "content": f"Tool output:\n{tool_output}"}
                 )
-
         finally:
+            patch = self.sandbox.get_patch()
             self.sandbox.stop()
 
-        patch = self.sandbox.get_patch()
         return SolutionOutput(
             task_id=task.instance_id,
             benchmark="swebench",
@@ -579,18 +582,21 @@ class SWEBenchAgent:
             return None, {}
 
     @staticmethod
-    def build_initial_prompt(task: SWEBenchTaskInput) -> str:
+    def build_initial_prompt(
+        task: SWEBenchTaskInput,
+        tools
+    ) -> str:
+        tool_section = "## Available Tools\n\n"
+
+        for tool in tools:
+            tool_section += f"- {tool.name}\n"
+
         prompt = SYSTEM_PROMPT
+        prompt += tool_section
+
         prompt += "\n## Task\n"
         prompt += f"Repository: {task.repo}\n"
-        prompt += f"Instance: {task.instance_id}\n\n"
-        prompt += f"## Problem Statement\n{task.problem_statement}\n"
+        prompt += f"Instance: {task.instance_id}\n"
+        prompt += f"Problem Statement:\n{task.problem_statement}\n"
 
-        if task.hints_text:
-            prompt += f"\n## Hints\n{task.hints_text}\n"
-
-        prompt += (
-            "\nThe repository is at /testbed. Start by searching "
-            "for the relevant code."
-        )
         return prompt

@@ -1,7 +1,8 @@
+from .sandbox_config import SandboxConfig
 from ..mcp import MCPClient
 from pathlib import Path
 from typing import Any
-import contextlib
+from rich import print
 import docker
 import io
 import os
@@ -18,19 +19,6 @@ class Sandbox:
         self.mcp_client: MCPClient | None = None
 
         self._root_path = Path(__file__).parent.parent.parent.parent
-
-        # MBPP: MCP server não precisa de aceder ao container Docker,
-        # por isso pode ser lançado imediatamente.
-        # SWE_BENCH: o MCP server precisa do container ID, que só existe
-        # depois de start()/pull(). O MCPClient é criado em _start_mcp_client().
-        if agent == "MBPP":
-            server_env = dict(os.environ)
-            server_env["IS_MCP_SERVER"] = "1"
-            self.mcp_client = MCPClient(
-                command="uv",
-                args=["run", "python", f"{self._root_path}/mcp_tools_mbpp.py"],
-                env=server_env
-            )
 
     def get_patch(self) -> str:
         """Retrieve the unified git diff of all changes made to /testbed."""
@@ -93,8 +81,6 @@ class Sandbox:
             code += "\n\n# --- AUTOMATED TESTS ---\n"
             for test in test_list:
                 code += f"{test}\n"
-
-        stdout_capture = io.StringIO()
 
         res = self.container.exec_run("python3 /sandbox/code.py")
         output = res.output.decode("utf-8")
@@ -178,19 +164,32 @@ class Sandbox:
             raise e
 
     def _start_mcp_client(self) -> None:
-        """Lança o MCPClient para SWE_BENCH depois do container existir.
-        Passa SANDBOX_CONTAINER_ID para o subprocesso MCP server poder
-        ligar-se ao container já criado via docker.from_env()."""
-        if self.agent != "SWE_BENCH" or self.mcp_client is not None:
+        if self.mcp_client is not None:
             return
+
         server_env = dict(os.environ)
         server_env["IS_MCP_SERVER"] = "1"
-        server_env["SANDBOX_CONTAINER_ID"] = self.container.id
-        self.mcp_client = MCPClient(
-            command="uv",
-            args=["run", "python", f"{self._root_path}/mcp_tools_swe_bench.py"],
-            env=server_env,
-        )
+        server_env["DOCKER_CONTAINER_ID"] = self.container.id
+
+        if self.agent == "MBPP":
+            self.mcp_client = MCPClient(
+                command="uv",
+                args=[
+                    "run", "python",
+                    f"{self._root_path}/mcp_tools_mbpp.py",
+                ],
+                env=server_env,
+            )
+
+        elif self.agent == "SWE_BENCH":
+            self.mcp_client = MCPClient(
+                command="uv",
+                args=[
+                    "run", "python",
+                    f"{self._root_path}/mcp_tools_swe_bench.py",
+                ],
+                env=server_env,
+            )
 
     def start(self) -> None:
         if not self.container:
@@ -205,29 +204,7 @@ class Sandbox:
                         "mode": "rw"
                     }}
                 )
-
-                root_path = Path(__file__).parent.parent.parent.parent
-                server_env = dict(os.environ)
-                server_env["IS_MCP_SERVER"] = "1"
-                server_env["DOCKER_CONTAINER_ID"] = self.container.id
-
-                if self.agent == "MBPP":
-                    self.mcp_client = MCPClient(
-                        command="uv",
-                        args=[
-                            "run", "python", f"{root_path}/mcp_tools_mbpp.py"
-                        ],
-                        env=server_env
-                    )
-                elif self.agent == "SWE_BENCH":
-                    self.mcp_client = MCPClient(
-                        command="uv",
-                        args=[
-                            "run", "python",
-                            f"{root_path}/mcp_tools_swe_bench.py"
-                        ],
-                        env=server_env
-                    )
+                self._start_mcp_client()
             except Exception as e:
                 raise e
         # else:
@@ -235,11 +212,13 @@ class Sandbox:
             #     "[bold yellow][!] Sandbox container is already "
             #     "running.[/bold yellow]"
             # )
-        self._start_mcp_client()
 
     def pull(self) -> None:
         """Pull a pre-built image from Docker Hub"""
         try:
+            print(
+                f"[bold green][+][/bold green] Pulling image '{self.image}'."
+            )
             self.client.images.pull(self.image)
             print("[bold green][+][/bold green] Image pulled successfully.")
         except docker.errors.ImageNotFound:

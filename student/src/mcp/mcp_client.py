@@ -80,3 +80,9 @@ class MCPClient:
         future.result()
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=2)
+
+    def list_tools(self):
+        future = asyncio.run_coroutine_threadsafe(
+            self._session.list_tools(), self._loop
+        )
+        return future.result().tools

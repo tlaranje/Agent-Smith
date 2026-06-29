@@ -1,15 +1,15 @@
 from mcp.server.fastmcp import FastMCP
 import docker
 import os
-import docker
-from contextlib import asynccontextmanager
-from mcp.server.fastmcp import FastMCP, Context
+
+mcp = FastMCP("swe-bench-tools")
 
 
 class SharedSandboxWrapper:
     def __init__(self, container):
         self.container = container
         self.eval_script = ""
+
 
 class ContainerShim:
     def __init__(self, container_id: str) -> None:
@@ -39,11 +39,12 @@ class SWEBenchToolState:
         cmd = f"cat << 'EOF' > {filepath}\n{escaped_content}\nEOF"
         self.container.exec_run(["bash", "-c", cmd])
 
+
 if os.environ.get("IS_MCP_SERVER"):
-    container_id = os.environ.get("SANDBOX_CONTAINER_ID", "")
+    container_id = os.environ.get("DOCKER_CONTAINER_ID", "")
     if not container_id:
         raise RuntimeError(
-            "IS_MCP_SERVER=1 mas SANDBOX_CONTAINER_ID não está definido."
+            "IS_MCP_SERVER=1 mas DOCKER_CONTAINER_ID não está definido."
         )
     _state = SWEBenchToolState(sandbox=ContainerShim(container_id))
 else:
@@ -52,14 +53,13 @@ else:
 
 @mcp.tool()
 def read_file(
-    filepath: str, ctx: Context, start_line: int | None = None,
+    filepath: str, start_line: int | None = None,
     end_line: int | None = None
 ) -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
-    if not sandbox:
+    if not _state.sandbox:
         return "ERROR: No active sandbox container session found."
 
-    out, code = sandbox._exec(f"cat {filepath}")
+    out, code = _state.sandbox._exec(f"cat {filepath}")
     if code != 0:
         return f"ERROR: Could not read {filepath}: {out}"
 
@@ -75,8 +75,8 @@ def read_file(
 
 
 @mcp.tool()
-def edit_file(filepath: str, old_str: str, new_str: str, ctx: Context) -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
+def edit_file(filepath: str, old_str: str, new_str: str) -> str:
+    sandbox = _state.sandbox
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
@@ -99,8 +99,8 @@ def edit_file(filepath: str, old_str: str, new_str: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-def list_files(directory: str, ctx: Context, pattern: str = "*") -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
+def list_files(directory: str, pattern: str = "*") -> str:
+    sandbox = _state.sandbox
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
@@ -113,8 +113,8 @@ def list_files(directory: str, ctx: Context, pattern: str = "*") -> str:
 
 
 @mcp.tool()
-def search_code(pattern: str, ctx: Context, file_pattern: str = "*.py") -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
+def search_code(pattern: str, file_pattern: str = "*.py") -> str:
+    sandbox = _state.sandbox
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
@@ -124,10 +124,8 @@ def search_code(pattern: str, ctx: Context, file_pattern: str = "*.py") -> str:
 
 
 @mcp.tool()
-def search_function_or_class_definition_in_code(
-    name: str, ctx: Context
-) -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
+def search_function_or_class_definition_in_code(name: str) -> str:
+    sandbox = _state.sandbox
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
@@ -144,10 +142,10 @@ def search_function_or_class_definition_in_code(
 
 @mcp.tool()
 def find_references(
-    name: str, ctx: Context, filepath: str | None = None,
+    name: str, filepath: str | None = None,
     line: int | None = None
 ) -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
+    sandbox = _state.sandbox
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
@@ -158,8 +156,8 @@ def find_references(
 
 
 @mcp.tool()
-def run_tests(ctx: Context) -> str:
-    sandbox = ctx.request_context.lifespan_context["sandbox"]
+def run_tests() -> str:
+    sandbox = _state.sandbox
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
@@ -173,6 +171,15 @@ def run_command(command: str, workdir: str = "/testbed") -> str:
     """Execute a shell command in the specified working directory."""
     out, code = _state.sandbox._exec(f"cd {workdir} && {command}")
     return f"Exit code: {code}\nOutput:\n{out}"
+
+
+@mcp.tool()
+def get_patch() -> str:
+    """Retrieve the unified git diff of all changes made to /testbed."""
+    out, _ = _state.sandbox._exec(
+        "cd /testbed && git -c core.fileMode=false diff"
+    )
+    return out
 
 
 if __name__ == "__main__":
