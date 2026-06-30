@@ -82,14 +82,26 @@ class Sandbox:
             for test in test_list:
                 code += f"{test}\n"
 
+        file_size: int = os.path.getsize(???)
+        max_size: int = SandboxConfig.max_memory_mb * 1024 * 1024
+
+        if file_size > max_size:
+            return (
+                f"Code file is too large ({file_size / (1024 * 1024):.2f} MB). "
+                f"Maximum allowed size is {SandboxConfig.max_memory_mb} MB.",
+                False,
+            )
+
+        timeout: int = SandboxConfig.max_execution_time_seconds
         res = self.container.exec_run(
-            "bash -lc 'timeout 60s python3 /sandbox/code.py'"
+            f"bash -lc 'timeout {timeout}s python3 /sandbox/code.py'"
         )
         output = res.output.decode("utf-8")
 
         if res.exit_code == 124:
             return (
-                "[TIMEOUT]\nExecution exceeded 60 seconds.",
+                f"{output}"
+                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
                 False
             )
 
