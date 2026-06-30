@@ -82,7 +82,7 @@ class Sandbox:
             for test in test_list:
                 code += f"{test}\n"
 
-        file_size: int = os.path.getsize(???)
+        file_size: int = self.container.exec_run("stat -c%s /sandbox/code.py")
         max_size: int = SandboxConfig.max_memory_mb * 1024 * 1024
 
         if file_size > max_size:
