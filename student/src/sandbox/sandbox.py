@@ -3,10 +3,11 @@ from ..mcp import MCPClient
 from pathlib import Path
 from typing import Any
 from rich import print
+import tarfile
 import docker
+import sys
 import io
 import os
-import tarfile
 
 
 class Sandbox:

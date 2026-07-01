@@ -67,10 +67,13 @@ def test_2_final_answer():
 
 
 def test_3_size_limit():
+    with open("test.py", "r") as fd:
+        code = fd.read()
+
     run_test(
         name="3. max_memory_mb limit (int fix)",
         config=SandboxConfig(max_memory_mb=0),
-        code="print(1)\n",
+        code=code,
         expected_success=False,
         check_fn=lambda out, _: "too large" in out,
     )

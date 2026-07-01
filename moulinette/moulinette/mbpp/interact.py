@@ -241,6 +241,7 @@ class InteractMBPP:
         try:
             task = _get_task_by_id(task_id, with_tests=True)
         except ValueError as e:
+            print("invalid ID")
             result = {
                 "success": False,
                 "message": str(e),

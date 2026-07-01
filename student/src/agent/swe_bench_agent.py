@@ -422,7 +422,7 @@ class SWEBenchAgent:
         self.sandbox = sandbox
         self.sandbox.pull()
         self.max_iterations: int = max_iterations
-        self.llms: list[Any] = llms
+        self.llms: list[Any] = [api for llm in llms.values() for api in llm]
         self.llm: Any = self.llms[0]
         self.current_llm_index: int = 0
 

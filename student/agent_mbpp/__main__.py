@@ -28,6 +28,7 @@ def main() -> None:
     )
 
     sandbox = Sandbox("MBPP")
+    sandbox.build("..")
     sandbox.start()
     sandbox.mcp_client.call_tool(
             "set_current_task_tests", test_list=task.test_list

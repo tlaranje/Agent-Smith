@@ -74,7 +74,7 @@ class MBPPAgent:
         self.sandbox.build("..")
 
         self.max_iterations: int = max_iterations
-        self.llms: list[Any] = llms
+        self.llms: list[Any] = [api for llm in llms.values() for api in llm]
         self.llm: Any = self.llms[0]
         self.current_llm_index: int = 0
 
@@ -109,6 +109,16 @@ class MBPPAgent:
                         retries += 1
                         self.chose_llm()
                 code = self.extract_code(response.content)
+
+                final_answer_shim = (
+                    "import os as _os\n"
+                    "def final_answer(answer_string):\n"
+                    "    _os.makedirs('/tmp/agent', exist_ok=True)\n"
+                    "    with open('/tmp/agent/final_result.py', 'w', "
+                    "encoding='utf-8') as _f:\n"
+                    "        _f.write(answer_string)\n\n"
+                )
+
                 if "final_answer(" in code:
                     import io
                     import contextlib
@@ -139,7 +149,7 @@ class MBPPAgent:
                     api_url=self.llm.api_url,
                     model_name=self.llm.model_name,
                     llm_output=response.content,
-                    sandbox_input=code,
+                    sandbox_input=final_answer_shim + code,
                     sandbox_output=sandbox_output,
                     retries=retries,
                 ))
@@ -150,7 +160,7 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        solution=code,
+                        solution=final_answer_shim + code,
                         system_prompt=SYSTEM_PROMPT,
                         iterations=iteration + 1,
                         total_requests=total_requests,
