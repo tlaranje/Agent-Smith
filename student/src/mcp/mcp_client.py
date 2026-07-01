@@ -47,10 +47,37 @@ class MCPClient:
         return result.content[0].text
 
     def call_tool(self, name: str, /, **kwargs) -> str:
-        future = asyncio.run_coroutine_threadsafe(
-            self._call_tool_async(name, **kwargs), self._loop
-        )
-        return future.result()
+        allowed_tools_name: list[str] = [t.name for t in self.list_tools()]
+        if name not in allowed_tools_name:
+            return (
+                f"ERROR:\n"
+                f"Unknown tool name: '{name}'\n\n"
+                f"Available tools:\n"
+                + "\n".join(f"- {t}" for t in allowed_tools_name)
+            )
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._call_tool_async(name, **kwargs),
+                self._loop
+            )
+            return future.result()
+
+        except TypeError as e:
+            return (
+                f"ERROR:\n"
+                f"Invalid arguments for tool '{name}'.\n"
+                f"Details: {str(e)}\n"
+                f"Received args: {kwargs}"
+            )
+
+        except Exception as e:
+            return (
+                f"ERROR:\n"
+                f"Tool execution failed.\n"
+                f"Tool: {name}\n"
+                f"Exception: {str(e)}"
+            )
 
     def discover_tools(self) -> dict[str, Callable[..., str]]:
         future = asyncio.run_coroutine_threadsafe(

@@ -133,6 +133,13 @@ class Sandbox:
                 False,
             )
 
+        if res.exit_code == 124:
+            return (
+                f"{output}"
+                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
+                False
+            )
+
         if res.exit_code != 0:
             return (
                 f"[RUNTIME ERROR]\n{output}",
