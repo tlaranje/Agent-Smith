@@ -6,14 +6,19 @@ from rich import print
 import docker
 import io
 import os
+import tarfile
 
 
 class Sandbox:
     def __init__(
-        self, agent: str = "MBPP", image: str = "agent_sandbox:latest"
+        self,
+        agent: str = "MBPP",
+        image: str = "agent_sandbox:latest",
+        config: SandboxConfig | None = None,
     ) -> None:
         self.image = image
         self.agent = agent
+        self.config = config if config is not None else SandboxConfig()
         self.client = docker.from_env()
         self.container: Any = None
         self.mcp_client: MCPClient | None = None
@@ -21,7 +26,6 @@ class Sandbox:
         self._root_path = Path(__file__).parent.parent.parent.parent
 
     def get_patch(self) -> str:
-        """Retrieve the unified git diff of all changes made to /testbed."""
         out, _ = self._exec(
             "cd /testbed && git -c core.fileMode=false diff"
         )
@@ -29,7 +33,9 @@ class Sandbox:
 
     def _final_answer(self, answer_string: str):
         os.makedirs("/tmp/agent", exist_ok=True)
-        with open("/tmp/agent/final_result.py", "w", encoding="utf-8") as f:
+        with open(
+            "/tmp/agent/final_result.py", "w", encoding="utf-8"
+        ) as f:
             f.write(answer_string)
 
     def _restricted_builtins(self) -> dict:
@@ -38,11 +44,12 @@ class Sandbox:
         allowed = [
             'abs', 'all', 'any', 'bin', 'bool', 'chr', 'dict', 'divmod',
             'enumerate', 'filter', 'float', 'format', 'hash', 'hex', 'id',
-            'int', 'isinstance', 'issubclass', 'iter', 'len', 'list', 'map',
-            'max', 'min', 'next', 'oct', 'ord', 'pow', 'print', 'range',
-            'repr', 'reversed', 'round', 'set', 'slice', 'sorted', 'str',
-            'sum', 'tuple', 'type', 'zip', 'Exception', 'ValueError',
-            'TypeError', 'AssertionError', 'IndexError', 'KeyError'
+            'int', 'isinstance', 'issubclass', 'iter', 'len', 'list',
+            'map', 'max', 'min', 'next', 'oct', 'ord', 'pow', 'print',
+            'range', 'repr', 'reversed', 'round', 'set', 'slice',
+            'sorted', 'str', 'sum', 'tuple', 'type', 'zip', 'Exception',
+            'ValueError', 'TypeError', 'AssertionError', 'IndexError',
+            'KeyError',
         ]
         for name in allowed:
             if hasattr(builtins, name):
@@ -55,13 +62,27 @@ class Sandbox:
         namespace["final_answer"] = self._final_answer
         return namespace
 
+    def _write_code_to_container(self, code: str, path: str) -> None:
+        directory = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        tarstream = io.BytesIO()
+        with tarfile.open(fileobj=tarstream, mode="w") as tar:
+            data = code.encode("utf-8")
+            tarinfo = tarfile.TarInfo(name=filename)
+            tarinfo.size = len(data)
+            tar.addfile(tarinfo, io.BytesIO(data))
+        tarstream.seek(0)
+
+        self.container.put_archive(directory, tarstream)
+
     def execute(
         self, code: str, test_list: list[str] | None = None
     ) -> tuple[str, bool]:
-        if not SandboxConfig().validate_code(code):
+        if not self.config.validate_code(code):
             return (
-                "[bold red]Code rejected: disallowed import, "
-                "file path, or use of eval/exec.[/bold red]",
+                "Code rejected: disallowed import, "
+                "file path, or use of eval/exec.",
                 False,
             )
 
@@ -82,21 +103,42 @@ class Sandbox:
             for test in test_list:
                 code += f"{test}\n"
 
-        res = self.container.exec_run("python3 /sandbox/code.py")
-        output = res.output.decode("utf-8")
+        self._write_code_to_container(code, "/sandbox/code.py")
+
+        size_result = self.container.exec_run(
+            "stat -c%s /sandbox/code.py"
+        )
+        file_size = int(size_result.output.decode("utf-8").strip())
+        max_size = self.config.max_memory_mb * 1024 * 1024
+
+        if file_size > max_size:
+            return (
+                f"Code file is too large "
+                f"({file_size / (1024 * 1024):.2f} MB). "
+                f"Maximum allowed size is "
+                f"{self.config.max_memory_mb} MB.",
+                False,
+            )
+
+        timeout = self.config.max_execution_time_seconds
+        res = self.container.exec_run(
+            f"bash -lc 'timeout {timeout}s python3 /sandbox/code.py'"
+        )
+        output = res.output.decode("utf-8", errors="replace")
+
+        if res.exit_code == 124:
+            return (
+                f"{output}"
+                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
+                False,
+            )
 
         if res.exit_code != 0:
-            # print(
-            #     "[bold red][!] The execution failed or failed "
-            #     "in a test assert:[/bold red]"
-            # )
-            # print(f"[red]{output.strip()}[/red]")
-            return output, False
+            return (
+                f"[RUNTIME ERROR]\n{output}",
+                False,
+            )
 
-        # Exit code 0 only means the script ran without raising.
-        # It does NOT mean final_answer() was called. We confirm that
-        # by checking whether final_result.py was written inside the
-        # container during this run.
         check = self.container.exec_run(
             "test -f /tmp/agent/final_result.py"
         )
@@ -105,15 +147,14 @@ class Sandbox:
             answer_res = self.container.exec_run(
                 "cat /tmp/agent/final_result.py"
             )
-            answer = answer_res.output.decode("utf-8")
+            answer = answer_res.output.decode(
+                "utf-8", errors="replace"
+            )
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
             return answer, True
 
-        # Script ran fine (e.g. tests passed) but final_answer() was
-        # never called -> not done yet, keep iterating.
         return output, False
 
-    # Docker
     def build(self, path: str = ".") -> None:
         dockerfile_path = os.path.join(path, "Dockerfile")
         if not os.path.exists(dockerfile_path):
@@ -121,19 +162,9 @@ class Sandbox:
                 f"Dockerfile not found in: {os.path.abspath(path)}"
             )
 
-        # abs_path = os.path.abspath(dockerfile_path)
-        # print(
-        #     f"[bold blue][*][/bold blue] Reading Dockerfile from: "
-        #     f"[yellow]{abs_path}[/yellow]"
-        # )
         try:
             with open(dockerfile_path, "r", encoding="utf-8") as f:
                 dockerfile_content = f.read()
-
-            # print(
-            #     f"[bold blue][*][/bold blue] Building Docker image "
-            #     f"'[cyan]{self.image}[/cyan]'"
-            # )
 
             self.client.images.build(
                 fileobj=io.BytesIO(dockerfile_content.encode("utf-8")),
@@ -142,25 +173,11 @@ class Sandbox:
                 rm=True,
                 forcerm=True,
             )
-            # print(
-            #     f"[bold green][+][/bold green] Docker image "
-            #     f"'[cyan]{self.image}[/cyan]' built successfully!"
-            # )
 
         except docker.errors.BuildError as e:
-            # print(
-            #    "[bold red][-] Critical error during Docker build:[/bold red]"
-            # )
-            # for log in e.build_log:
-            #     if "stream" in log:
-            #         print(f"[red]>>> {log['stream'].strip()}[/red]")
             raise e
 
         except Exception as e:
-            # print(
-            #    f"[bold red][-] Unexpected error during Docker daemon build: "
-            #     f"{e}[/bold red]"
-            # )
             raise e
 
     def _start_mcp_client(self) -> None:
@@ -199,30 +216,34 @@ class Sandbox:
                     command="tail -f /dev/null",
                     detach=True,
                     remove=True,
-                    volumes={os.path.join(os.getcwd(), "../data/docker"): {
-                        "bind": "/sandbox",
-                        "mode": "rw"
-                    }}
+                    volumes={
+                        os.path.join(
+                            os.getcwd(), "../data/docker"
+                        ): {
+                            "bind": "/sandbox",
+                            "mode": "rw",
+                        }
+                    },
                 )
                 self._start_mcp_client()
             except Exception as e:
                 raise e
-        # else:
-            # print(
-            #     "[bold yellow][!] Sandbox container is already "
-            #     "running.[/bold yellow]"
-            # )
 
     def pull(self) -> None:
-        """Pull a pre-built image from Docker Hub"""
         try:
             print(
-                f"[bold green][+][/bold green] Pulling image '{self.image}'."
+                f"[bold green][+][/bold green] Pulling image "
+                f"'{self.image}'."
             )
             self.client.images.pull(self.image)
-            print("[bold green][+][/bold green] Image pulled successfully.")
+            print(
+                "[bold green][+][/bold green] Image pulled "
+                "successfully."
+            )
         except docker.errors.ImageNotFound:
-            raise RuntimeError(f"Image not found on Docker Hub: {self.image}")
+            raise RuntimeError(
+                f"Image not found on Docker Hub: {self.image}"
+            )
         except Exception as e:
             raise e
 
@@ -241,8 +262,10 @@ class Sandbox:
                 raise e
 
     def _exec(self, cmd: str) -> tuple[str, int]:
-        """Run a bash command inside the container, same pattern as your
-        MBPP exec_run."""
         result = self.container.exec_run(["bash", "-c", cmd])
-        output = result.output.decode("utf-8") if result.output else ""
+        output = (
+            result.output.decode("utf-8", errors="replace")
+            if result.output
+            else ""
+        )
         return output, result.exit_code

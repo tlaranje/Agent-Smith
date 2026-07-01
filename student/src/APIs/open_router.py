@@ -1,21 +1,16 @@
-from dotenv import load_dotenv
 from openai import OpenAI
 from typing import Any
-import os
 
 
 class OpenRouterAPI:
-    def __init__(self) -> None:
-        load_dotenv()
-
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.api_url: str = "https://openrouter.ai/api/v1"
         self.model_name = "meta-llama/llama-3.3-70b-instruct"
-
         self.client = OpenAI(
-            api_key=os.getenv("OPENROUTER_API_KEY"),
-            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            base_url=self.api_url,
         )
-
-        self.api_url: str = ""
 
     def generate_messages(self, messages: list[dict]) -> Any:
         from . import LLMResponse
