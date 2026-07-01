@@ -1,13 +1,11 @@
-from dotenv import load_dotenv
 import cohere
-import os
 
 
 class CohereAPI:
-    def __init__(self) -> None:
-        load_dotenv()
-        self.client = cohere.ClientV2(os.getenv("COHERE_API_KEY"))
-        self.api_url: str = ""
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.client = cohere.ClientV2(api_key)
+        self.api_url: str = "https://api.cohere.com"
         self.model_name = "command-a-plus-05-2026"
 
     def generate_messages(self, messages: list[dict]):
@@ -15,7 +13,7 @@ class CohereAPI:
 
         response = self.client.chat(
             model=self.model_name,
-            messages=messages
+            messages=messages,
         )
 
         texts = [
@@ -28,5 +26,5 @@ class CohereAPI:
             content="\n".join(texts),
             input_tokens=response.usage.tokens.input_tokens,
             output_tokens=response.usage.tokens.output_tokens,
-            model_name=self.model_name
+            model_name=self.model_name,
         )

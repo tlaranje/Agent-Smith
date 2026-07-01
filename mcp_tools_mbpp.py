@@ -1,4 +1,6 @@
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 import docker
 import os
 
@@ -11,21 +13,29 @@ class SharedSandboxWrapper:
 
     def execute(self, code: str, test_list: list[str]) -> tuple[str, bool]:
         import io
-        import contextlib
+        import tarfile
 
-        global_vars = {"__builtins__": __builtins__}
-        local_vars = {}
-        stdout_capture = io.StringIO()
+        full_script = code + "\n" + "\n".join(test_list) + "\n"
 
-        try:
-            with contextlib.redirect_stdout(stdout_capture), \
-                 contextlib.redirect_stderr(stdout_capture):
-                exec(code, global_vars, local_vars)
-                for test in test_list:
-                    exec(test, global_vars, local_vars)
-            return stdout_capture.getvalue(), True
-        except Exception as e:
-            return stdout_capture.getvalue() + f"Exception raised: {e}", False
+        tarstream = io.BytesIO()
+        with tarfile.open(fileobj=tarstream, mode="w") as tar:
+            data = full_script.encode("utf-8")
+            tarinfo = tarfile.TarInfo(name="_exec_script.py")
+            tarinfo.size = len(data)
+            tar.addfile(tarinfo, io.BytesIO(data))
+        tarstream.seek(0)
+
+        self.container.put_archive("/tmp/agent", tarstream)
+
+        exec_result = self.container.exec_run(
+            ["python3", "/tmp/agent/_exec_script.py"],
+            workdir="/tmp/agent",
+        )
+
+        output = exec_result.output.decode("utf-8", errors="replace")
+        success = exec_result.exit_code == 0
+
+        return output, success
 
 
 class MBPPToolState:
@@ -51,13 +61,35 @@ else:
 mcp = FastMCP("mbpp-tools")
 
 
-@mcp.tool()
-def set_current_task_tests(
-    test_list: list[str] | None = None, **kwargs
-) -> str:
-    if "args" in kwargs and isinstance(kwargs["args"], dict):
-        test_list = kwargs["args"].get("test_list", test_list)
+@mcp.custom_route("/initialize", methods=["POST"])
+async def initialize(request: Request) -> JSONResponse:
+    payload = await request.json()
 
+    container_id = payload.get("docker_container_id")
+    task = payload.get("task", {})
+
+    if not container_id:
+        return JSONResponse(
+            {"error": "docker_container_id is required"}, status_code=400
+        )
+
+    client = docker.from_env()
+    container = client.containers.get(container_id)
+    _state.sandbox = SharedSandboxWrapper(container)
+
+    test_list = task.get("test_list", [])
+    _state.current_task_tests = test_list
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "message": f"Session initialized with {len(test_list)} tests.",
+        }
+    )
+
+
+@mcp.tool()
+def set_current_task_tests(test_list: list[str] | None = None) -> str:
     if test_list is None:
         return "ERROR: test_list is required."
 
@@ -66,10 +98,7 @@ def set_current_task_tests(
 
 
 @mcp.tool()
-def run_tests(code: str | None = None, **kwargs) -> str:
-    if "args" in kwargs and isinstance(kwargs["args"], dict):
-        code = kwargs["args"].get("code", code)
-
+def run_tests(code: str | None = None) -> str:
     if code is None:
         return "ERROR: code is required."
 
@@ -101,4 +130,15 @@ def run_tests(code: str | None = None, **kwargs) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--http", action="store_true")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+
+    if args.http:
+        mcp.settings.port = args.port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()

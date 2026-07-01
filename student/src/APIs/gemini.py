@@ -1,14 +1,12 @@
-from dotenv import load_dotenv
 from google import genai
 from typing import Any
-import os
 
 
 class GeminiAPI:
-    def __init__(self) -> None:
-        load_dotenv()
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY_1"))
-        self.api_url: str = ""
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self.client = genai.Client(api_key=api_key)
+        self.api_url: str = "https://generativelanguage.googleapis.com"
         self.model_name = "gemini-2.5-flash-lite"
 
     def generate_messages(self, messages: list[dict]) -> Any:
@@ -17,7 +15,7 @@ class GeminiAPI:
         contents = [
             {
                 "role": "model" if m["role"] == "assistant" else m["role"],
-                "parts": [{"text": m["content"]}]
+                "parts": [{"text": m["content"]}],
             }
             for m in messages
         ]
@@ -26,9 +24,10 @@ class GeminiAPI:
             model=self.model_name,
             contents=contents,
         )
+
         return LLMResponse(
             content=response.text,
             input_tokens=response.usage_metadata.prompt_token_count,
             output_tokens=response.usage_metadata.candidates_token_count,
-            model_name=self.model_name
+            model_name=self.model_name,
         )

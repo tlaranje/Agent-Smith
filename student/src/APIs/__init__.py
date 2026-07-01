@@ -1,36 +1,71 @@
-from .gemini import GeminiAPI
-from .groq import GroqAPI
-from .cohere import CohereAPI
-from .open_router import OpenRouterAPI
-from pydantic import BaseModel
-from typing import Any
+from dataclasses import dataclass
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 
-class LLMResponse(BaseModel):
+@dataclass
+class LLMResponse:
     content: str
     input_tokens: int
     output_tokens: int
     model_name: str
 
 
-def get_llms(model_name: str = "gemini") -> list[Any]:
-    models = {
-        "gemini": GeminiAPI,
-        "groq": GroqAPI,
-        "cohere": CohereAPI,
-        "open_router": OpenRouterAPI
+def _load_keys(prefix: str) -> list[str]:
+    keys = []
+    for i in range(0, 20):
+        key = os.getenv(f"{prefix}_{i}")
+        if key:
+            keys.append(key)
+    if not keys:
+        key = os.getenv(prefix)
+        if key:
+            keys.append(key)
+    return keys
+
+
+def get_llms(priority_provider: str) -> dict[str, list]:
+    from .gemini import GeminiAPI
+    from .groq import GroqAPI
+    from .open_router import OpenRouterAPI
+    from .cohere import CohereAPI
+
+    provider_map = {
+        "gemini": (GeminiAPI, "GEMINI_API_KEY"),
+        "groq": (GroqAPI, "GROQ_API_KEY"),
+        "openrouter": (OpenRouterAPI, "OPENROUTER_API_KEY"),
+        "cohere": (CohereAPI, "COHERE_API_KEY"),
     }
 
-    if model_name not in models:
-        raise ValueError(f"LLM model '{model_name}' not supported")
+    priority_name = priority_provider.lower()
+    if priority_name not in provider_map:
+        raise ValueError(
+            f"Unknown priority provider '{priority_provider}'. "
+            f"Valid options: {list(provider_map.keys())}"
+        )
 
-    ordered_models = [models[model_name]]
+    cls, env_prefix = provider_map[priority_name]
+    priority_keys = _load_keys(env_prefix)
 
-    for name, model in models.items():
-        if name != model_name:
-            ordered_models.append(model)
+    if not priority_keys:
+        raise RuntimeError(
+            f"Priority provider '{priority_provider}' requested, "
+            f"but no keys found for {env_prefix} in environment variables."
+        )
 
-    return [model() for model in ordered_models]
+    ordered_providers = {
+        priority_name: [cls(api_key=key) for key in priority_keys]
+    }
 
+    for name, (cls, env_prefix) in provider_map.items():
+        if name == priority_name:
+            continue
 
-__all__ = ["GeminiAPI", "GroqAPI", "CohereAPI"]
+        keys = _load_keys(env_prefix)
+        ordered_providers[name] = (
+            [cls(api_key=key) for key in keys] if keys else []
+        )
+
+    return ordered_providers

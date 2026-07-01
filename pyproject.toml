@@ -16,7 +16,7 @@ dependencies = [
     "dotenv",
     "groq",
     "cohere",
-	"openai",
+    "openai",
     "mcp",
     "fastmcp>=3.4.2",
 ]
@@ -29,14 +29,14 @@ dev = [
 ]
 
 [project.scripts]
-sandbox = "src.__main__:main"
+sandbox = "student.src.__main__:main"
 
 [tool.uv]
 package = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["student*"]
 
 [[tool.mypy.overrides]]
 module = "fire"
