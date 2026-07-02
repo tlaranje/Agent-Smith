@@ -28,7 +28,7 @@ def main() -> None:
     )
     sandbox: Sandbox = Sandbox("SWE_BENCH", task.docker_image)
     agent: SWEBenchAgent = SWEBenchAgent(
-        get_llms(args.model_name), sandbox
+        get_llms(args.model_name), sandbox, max_iterations=30
     )
     solution = agent.solve(task)
     output_path = Path(args.output)

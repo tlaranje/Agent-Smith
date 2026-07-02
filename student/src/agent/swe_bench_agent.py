@@ -440,6 +440,7 @@ class SWEBenchAgent:
         total_input_tokens = 0
         total_output_tokens = 0
 
+        self.sandbox.eval_script = task.eval_script
         self.sandbox.start()
         tools = self.sandbox.mcp_client.list_tools()
 

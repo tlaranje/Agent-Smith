@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any
 from rich import print
 import tarfile
+import base64
 import docker
-import sys
 import io
 import os
 
@@ -195,6 +195,9 @@ class Sandbox:
         server_env = dict(os.environ)
         server_env["IS_MCP_SERVER"] = "1"
         server_env["DOCKER_CONTAINER_ID"] = self.container.id
+        server_env["EVAL_SCRIPT_B64"] = base64.b64encode(
+            self.eval_script.encode("utf-8")
+        ).decode("ascii")
 
         if self.agent == "MBPP":
             self.mcp_client = MCPClient(

@@ -1,6 +1,10 @@
 from mcp.server.fastmcp import FastMCP
+from rich import print
 import docker
+import base64
+import sys
 import os
+import re
 
 mcp = FastMCP("swe-bench-tools")
 
@@ -15,7 +19,10 @@ class ContainerShim:
     def __init__(self, container_id: str) -> None:
         client = docker.from_env()
         self._container = client.containers.get(container_id)
-        self.eval_script: str = ""
+        self.eval_script: str = base64.b64decode(
+            os.environ.get("EVAL_SCRIPT_B64", "")
+        ).decode("utf-8")
+        self._exec("git config --global --add safe.directory /testbed")
 
     def _exec(self, cmd: str) -> tuple[str, int]:
         result = self._container.exec_run(["bash", "-c", cmd])
@@ -77,24 +84,59 @@ def read_file(
 @mcp.tool()
 def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     sandbox = _state.sandbox
+
+    # print("old file:", sandbox._exec(f"cat {filepath}"), file=sys.stderr)
+
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
     out, code = sandbox._exec(f"cat {filepath}")
     if code != 0:
         return f"ERROR: Could not read {filepath}: {out}"
-    if old_str not in out:
+
+    pattern = re.escape(old_str)
+
+    matches = list(re.finditer(pattern, out, flags=re.MULTILINE))
+
+    if not matches:
         return (
-            f"ERROR: old_str not found in {filepath}. Make sure it "
-            "matches exactly including indentation and whitespace."
+            f"ERROR: old_str not found in {filepath}. "
+            "Make sure it matches exactly, including whitespace."
         )
-    if out.count(old_str) > 1:
+
+    if len(matches) > 1:
         return (
-            f"ERROR: old_str matches {out.count(old_str)} locations in "
-            f"{filepath}. Make it more specific."
+            f"ERROR: old_str matched {len(matches)} locations in "
+            f"{filepath}. Please provide more surrounding context."
         )
-    new_content = out.replace(old_str, new_str, 1)
+
+    match = matches[0]
+
+    new_content = (
+        out[:match.start()]
+        + new_str
+        + out[match.end():]
+    )
+
+    if new_content == out:
+        return (
+            "ERROR: Replacement produced no changes. "
+            "The requested replacement is identical to the current file."
+        )
+
     sandbox._write_file(filepath, new_content)
+
+    diff, _ = sandbox._exec(f"git -C /testbed diff -- {filepath}")
+
+    if not diff.strip():
+        return (
+            "WARNING: File was rewritten but git reports no modifications."
+        )
+
+    return f"OK: {filepath} updated successfully."
+
+    # print("new file:", sandbox._exec(f"cat {filepath}"), file=sys.stderr)
+
     return f"OK: {filepath} updated successfully."
 
 
@@ -175,6 +217,8 @@ def run_command(command: str, workdir: str = "/testbed") -> str:
 
 @mcp.tool()
 def get_patch() -> str:
+    print("get_patch: ", _state.sandbox._exec("git status"), file=sys.stderr)
+    print("get_path:", _state.sandbox._exec("ls"), file=sys.stderr)
     """Retrieve the unified git diff of all changes made to /testbed."""
     out, _ = _state.sandbox._exec(
         "cd /testbed && git -c core.fileMode=false diff"
