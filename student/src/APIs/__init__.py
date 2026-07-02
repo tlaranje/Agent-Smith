@@ -60,12 +60,11 @@ def get_llms(priority_provider: str) -> dict[str, list]:
     }
 
     for name, (cls, env_prefix) in provider_map.items():
-        if name == priority_name:
-            continue
-
         keys = _load_keys(env_prefix)
-        ordered_providers[name] = (
-            [cls(api_key=key) for key in keys] if keys else []
-        )
+        instances = []
+        if keys:
+            for key in keys:
+                instances.append(cls(api_key=key))
+        ordered_providers[name] = instances
 
     return ordered_providers

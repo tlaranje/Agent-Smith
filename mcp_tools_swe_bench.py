@@ -30,11 +30,11 @@ class ContainerShim:
         return output, result.exit_code
 
     def _write_file(self, filepath: str, content: str) -> None:
-        import base64
         encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        self._exec(
-            f"echo {encoded} | base64 -d > {filepath}"
+        result = self._exec(
+            f"printf '%s' '{encoded}' | base64 -d > {filepath}"
         )
+        return result
 
 
 class SWEBenchToolState:
@@ -126,16 +126,9 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
 
     sandbox._write_file(filepath, new_content)
 
-    diff, _ = sandbox._exec(f"git -C /testbed diff -- {filepath}")
-
-    if not diff.strip():
-        return (
-            "WARNING: File was rewritten but git reports no modifications."
-        )
-
-    return f"OK: {filepath} updated successfully."
-
-    # print("new file:", sandbox._exec(f"cat {filepath}"), file=sys.stderr)
+    verify, _ = sandbox._exec(f"cat {filepath}")
+    if verify != new_content:
+        return f"ERROR: write to {filepath} did not persist."
 
     return f"OK: {filepath} updated successfully."
 
