@@ -31,12 +31,14 @@ def get_llms(priority_provider: str) -> dict[str, list]:
     from .groq import GroqAPI
     from .open_router import OpenRouterAPI
     from .cohere import CohereAPI
+    from .mistral import MistralAPI
 
     provider_map = {
         "gemini": (GeminiAPI, "GEMINI_API_KEY"),
         "groq": (GroqAPI, "GROQ_API_KEY"),
         "openrouter": (OpenRouterAPI, "OPENROUTER_API_KEY"),
         "cohere": (CohereAPI, "COHERE_API_KEY"),
+        "mistral": (MistralAPI, "MISTRAL_API_KEY"),
     }
 
     priority_name = priority_provider.lower()

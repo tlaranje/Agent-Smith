@@ -23,6 +23,7 @@ class Sandbox:
         self.client = docker.from_env()
         self.container: Any = None
         self.mcp_client: MCPClient | None = None
+        self.eval_script: str = ""
 
         self._root_path = Path(__file__).parent.parent.parent.parent
 

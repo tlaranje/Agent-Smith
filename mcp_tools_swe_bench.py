@@ -2,6 +2,8 @@ from mcp.server.fastmcp import FastMCP
 from rich import print
 import docker
 import base64
+import tarfile
+import io
 import sys
 import os
 import re
@@ -30,21 +32,29 @@ class ContainerShim:
         return output, result.exit_code
 
     def _write_file(self, filepath: str, content: str) -> None:
-        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        result = self._exec(
-            f"printf '%s' '{encoded}' | base64 -d > {filepath}"
-        )
-        return result
+        directory = os.path.dirname(filepath)
+        filename = os.path.basename(filepath)
+
+        self._exec(f"mkdir -p {directory}")
+
+        data = content.encode("utf-8")
+        tarstream = io.BytesIO()
+        with tarfile.open(fileobj=tarstream, mode="w") as tar:
+            tarinfo = tarfile.TarInfo(name=filename)
+            tarinfo.size = len(data)
+            tar.addfile(tarinfo, io.BytesIO(data))
+        tarstream.seek(0)
+
+        ok = self._container.put_archive(directory, tarstream)
+        if not ok:
+            raise RuntimeError(
+                f"put_archive failed while writing {filepath}"
+            )
 
 
 class SWEBenchToolState:
     def __init__(self, sandbox: ContainerShim | None) -> None:
         self.sandbox = sandbox
-
-    def _write_file(self, filepath: str, content: str) -> None:
-        escaped_content = content.replace("'", "'\\''")
-        cmd = f"cat << 'EOF' > {filepath}\n{escaped_content}\nEOF"
-        self.container.exec_run(["bash", "-c", cmd])
 
 
 if os.environ.get("IS_MCP_SERVER"):
@@ -85,8 +95,6 @@ def read_file(
 def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     sandbox = _state.sandbox
 
-    # print("old file:", sandbox._exec(f"cat {filepath}"), file=sys.stderr)
-
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
@@ -124,7 +132,10 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
             "The requested replacement is identical to the current file."
         )
 
-    sandbox._write_file(filepath, new_content)
+    try:
+        sandbox._write_file(filepath, new_content)
+    except Exception as e:
+        return f"ERROR: write to {filepath} failed: {e}"
 
     verify, _ = sandbox._exec(f"cat {filepath}")
     if verify != new_content:
