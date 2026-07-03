@@ -6,3 +6,4 @@ Agent_Smith.egg-info
 uv.lock
 .community.db
 data/output
+.mypy_cache
