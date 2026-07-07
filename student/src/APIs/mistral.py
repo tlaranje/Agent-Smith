@@ -1,19 +1,18 @@
 from mistralai.client import Mistral
-from typing import Any
 
 
 class MistralAPI:
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
-        self.model_name: str = "mistral-medium-latest"
+    def __init__(self, api_key: str):
         self.client = Mistral(api_key=api_key)
+        self.api_url = ""
+        self.model_name = "mistral-medium-latest"
 
-    def generate_messages(self, messages: list[dict]) -> Any:
+    def generate_messages(self, messages):
         from . import LLMResponse
 
-        response = self.client.models.generate_content(
+        response = self.client.chat.complete(
             model=self.model_name,
-            contents=messages,
+            messages=messages,
         )
 
         return LLMResponse(

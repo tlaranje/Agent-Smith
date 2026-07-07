@@ -68,17 +68,34 @@ class SandboxConfig(BaseModel):
             return False
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name):
-                    if node.func.id == "open":
-                        args = node.args
+            if not isinstance(node, ast.Call):
+                continue
 
-                        if args and isinstance(args[0], ast.Constant):
-                            path = str(args[0].value)
+            func_id = None
+            if isinstance(node.func, ast.Name):
+                func_id = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                func_id = node.func.attr
 
-                            if not any(path.startswith(d)
-                               for d in self.allowed_directories):
-                                return False
+            if func_id in ("open",):
+                args = node.args
+                if args and isinstance(args[0], ast.Constant):
+                    path = str(args[0].value)
+                    if not any(
+                        path.startswith(d)
+                        for d in self.allowed_directories
+                    ):
+                        return False
+
+            if func_id in ("Path",):
+                args = node.args
+                if args and isinstance(args[0], ast.Constant):
+                    path = str(args[0].value)
+                    if not any(
+                        path.startswith(d)
+                        for d in self.allowed_directories
+                    ):
+                        return False
         return True
 
     def validate_code(self, code: str = "") -> bool:

@@ -1,9 +1,9 @@
 from typing import Any, Optional, List
 from pydantic import BaseModel, Field
 from ..parser import MBPPTaskInput
+from ..parser.code_extractor import extract_code
 from datetime import datetime
 import time
-import re
 
 SYSTEM_PROMPT = """
 You are a coding agent solving Python programming tasks.
@@ -108,39 +108,32 @@ class MBPPAgent:
                     except Exception:
                         retries += 1
                         self.chose_llm()
-                code = self.extract_code(response.content)
 
-                final_answer_shim = (
-                    "import os as _os\n"
-                    "def final_answer(answer_string):\n"
-                    "    _os.makedirs('/tmp/agent', exist_ok=True)\n"
-                    "    with open('/tmp/agent/final_result.py', 'w', "
-                    "encoding='utf-8') as _f:\n"
-                    "        _f.write(answer_string)\n\n"
-                )
+                extraction = extract_code(response.content)
+                code = extraction.code
 
-                if "final_answer(" in code:
-                    import io
-                    import contextlib
-                    stdout_capture = io.StringIO()
-                    try:
-                        namespace = self.sandbox.build_namespace()
-                        with contextlib.redirect_stdout(stdout_capture), \
-                             contextlib.redirect_stderr(stdout_capture):
-                            exec(code, namespace, namespace)
-                        done = True
-                        sandbox_output = "Task completed using final_answer."
-                    except Exception as e:
-                        done = False
-                        sandbox_output = f"Error executing final_answer: {e}"
+                if extraction.matched_format == "none" and not code:
+                    sandbox_output = (
+                        "ERROR: No valid code block was found in your "
+                        "response. Wrap your Python code in a ```python "
+                        "... ``` block."
+                    )
+                    done = False
                 else:
                     sandbox_output = self.sandbox.mcp_client.call_tool(
                         "run_tests", code=code
                     )
+                    if extraction.malformed:
+                        sandbox_output = (
+                            f"[NOTE: code block was malformed but was still "
+                            f"interpreted as {extraction.matched_format} "
+                            f"input]\n{sandbox_output}"
+                        )
                     done = (
                         "SUCCESS: All tests passed successfully!"
                         in sandbox_output
                     )
+
                 steps.append(StepMetrics(
                     step=iteration + 1,
                     input_tokens=response.input_tokens,
@@ -149,7 +142,7 @@ class MBPPAgent:
                     api_url=self.llm.api_url,
                     model_name=self.llm.model_name,
                     llm_output=response.content,
-                    sandbox_input=final_answer_shim + code,
+                    sandbox_input=code,
                     sandbox_output=sandbox_output,
                     retries=retries,
                 ))
@@ -160,7 +153,7 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        solution=final_answer_shim + code,
+                        solution=code,
                         system_prompt=SYSTEM_PROMPT,
                         iterations=iteration + 1,
                         total_requests=total_requests,
@@ -219,13 +212,3 @@ class MBPPAgent:
             "\nWrite your solution:",
         ]
         return "\n".join(lines)
-
-    @staticmethod
-    def extract_code(text: str) -> str:
-        pattern = r"```[\w+]*\n([\s\S]*?)\n```"
-        match = re.findall(pattern, text)
-
-        if match:
-            return "\n".join(match).strip()
-
-        return text.strip()

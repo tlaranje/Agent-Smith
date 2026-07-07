@@ -27,6 +27,7 @@ dev = [
     "types-requests",
     "types-setuptools",
     "types-docopt",
+    "pytest>=9.1.1",
 ]
 
 [project.scripts]

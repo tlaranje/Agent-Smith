@@ -113,3 +113,50 @@ class MCPClient:
             self._session.list_tools(), self._loop
         )
         return future.result().tools
+
+    def generate_manual(self) -> str:
+        tools = self.list_tools()
+
+        if not tools:
+            return "No tools are currently available in this sandbox."
+
+        sections = [
+            "## Available Tools",
+            "",
+            "The following tools are exposed by the connected MCP "
+            "server and can be called as Python functions inside "
+            "the sandbox.",
+            "",
+        ]
+
+        for tool in tools:
+            sections.append(f"### {tool.name}")
+
+            description = getattr(tool, "description", None)
+            if description:
+                sections.append(description.strip())
+
+            schema = getattr(tool, "inputSchema", None) or {}
+            properties = schema.get("properties", {})
+            required = set(schema.get("required", []))
+
+            if properties:
+                sections.append("")
+                sections.append("Arguments:")
+                for pname, pschema in properties.items():
+                    ptype = pschema.get("type", "any")
+                    pdesc = pschema.get("description", "")
+                    marker = "required" if pname in required else "optional"
+                    line = f"- {pname} ({ptype}, {marker})"
+                    if pdesc:
+                        line += f": {pdesc}"
+                    sections.append(line)
+            else:
+                sections.append("")
+                sections.append("Arguments: none")
+
+            sections.append("")
+            sections.append(f"Example: {tool.name}(...)")
+            sections.append("")
+
+        return "\n".join(sections).strip()

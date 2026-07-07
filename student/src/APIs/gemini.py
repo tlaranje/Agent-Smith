@@ -25,9 +25,11 @@ class GeminiAPI:
             contents=contents,
         )
 
+        usage = response.usage
+
         return LLMResponse(
             content=response.text,
-            input_tokens=response.usage_metadata.prompt_token_count,
-            output_tokens=response.usage_metadata.candidates_token_count,
+            input_tokens=usage.prompt_token_count or 0,
+            output_tokens=usage.candidates_token_count or 0,
             model_name=self.model_name,
         )

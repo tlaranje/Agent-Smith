@@ -20,6 +20,8 @@ class OpenRouterAPI:
             messages=messages,
         )
 
+        print(response.usage)
+
         usage = response.usage
 
         return LLMResponse(
