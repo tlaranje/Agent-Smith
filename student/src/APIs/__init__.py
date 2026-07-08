@@ -26,7 +26,10 @@ def _load_keys(prefix: str) -> list[str]:
     return keys
 
 
-def get_llms(priority_provider: str) -> dict[str, list]:
+def get_llms(
+    priority_model_name: str,
+    priority_provider_url: str = "",
+) -> dict[str, list]:
     from .gemini import GeminiAPI
     from .groq import GroqAPI
     from .open_router import OpenRouterAPI
@@ -34,39 +37,91 @@ def get_llms(priority_provider: str) -> dict[str, list]:
     from .mistral import MistralAPI
 
     provider_map = {
-        "gemini": (GeminiAPI, "GEMINI_API_KEY"),
-        "groq": (GroqAPI, "GROQ_API_KEY"),
-        "openrouter": (OpenRouterAPI, "OPENROUTER_API_KEY"),
-        "cohere": (CohereAPI, "COHERE_API_KEY"),
-        "mistral": (MistralAPI, "MISTRAL_API_KEY"),
+        "gemini": (
+            GeminiAPI,
+            "GEMINI_API_KEY",
+            ["gemini-"],
+        ),
+        "groq": (
+            GroqAPI,
+            "GROQ_API_KEY",
+            [
+                "llama-",
+                "llama3-",
+                "mixtral-",
+            ],
+        ),
+        "openrouter": (
+            OpenRouterAPI,
+            "OPENROUTER_API_KEY",
+            [
+                "meta-llama/",
+                "google/",
+                "anthropic/",
+                "mistralai/",
+            ],
+        ),
+        "cohere": (
+            CohereAPI,
+            "COHERE_API_KEY",
+            [
+                "command",
+            ],
+        ),
+        "mistral": (
+            MistralAPI,
+            "MISTRAL_API_KEY",
+            [
+                "mistral-",
+            ],
+        ),
     }
 
-    priority_name = priority_provider.lower()
-    if priority_name not in provider_map:
+    def find_provider(model_name: str) -> str:
+        model = model_name.lower()
+
+        for provider, (_, _, prefixes) in provider_map.items():
+            for prefix in prefixes:
+                if model.startswith(prefix):
+                    return provider
+
         raise ValueError(
-            f"Unknown priority provider '{priority_provider}'. "
-            f"Valid options: {list(provider_map.keys())}"
+            f"Could not determine provider for model '{model_name}'."
         )
 
-    cls, env_prefix = provider_map[priority_name]
-    priority_keys = _load_keys(env_prefix)
+    priority_provider = find_provider(priority_model_name)
 
-    if not priority_keys:
+    ordered_providers: dict[str, list] = {}
+
+    cls, env_prefix, _ = provider_map[priority_provider]
+
+    keys = _load_keys(env_prefix)
+
+    if not keys:
         raise RuntimeError(
-            f"Priority provider '{priority_provider}' requested, "
-            f"but no keys found for {env_prefix} in environment variables."
+            f"No API keys found for {priority_provider}"
         )
 
-    ordered_providers = {
-        priority_name: [cls(api_key=key) for key in priority_keys]
-    }
+    ordered_providers[priority_provider] = [
+        cls(
+            api_key=key,
+            model_name=priority_model_name,
+            api_url=priority_provider_url,
+        )
+        for key in keys
+    ]
 
-    for name, (cls, env_prefix) in provider_map.items():
+    for name, (cls, env_prefix, _) in provider_map.items():
+        if name == priority_provider:
+            continue
+
         keys = _load_keys(env_prefix)
-        instances = []
-        if keys:
-            for key in keys:
-                instances.append(cls(api_key=key))
-        ordered_providers[name] = instances
+
+        ordered_providers[name] = [
+            cls(
+                api_key=key,
+            )
+            for key in keys
+        ]
 
     return ordered_providers

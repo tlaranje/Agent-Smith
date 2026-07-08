@@ -1,13 +1,22 @@
 from google import genai
 from typing import Any
+from google.genai.types import HttpOptions
 
 
 class GeminiAPI:
-    def __init__(self, api_key: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str = "gemini-2.5-flash-lite",
+        api_url: str = "https://generativelanguage.googleapis.com"
+    ) -> None:
         self.api_key = api_key
-        self.client = genai.Client(api_key=api_key)
-        self.api_url: str = "https://generativelanguage.googleapis.com"
-        self.model_name = "gemini-2.5-flash-lite"
+        self.model_name = model_name
+        self.api_url = api_url
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=HttpOptions(base_url=api_url)
+        )
 
     def generate_messages(self, messages: list[dict]) -> Any:
         from . import LLMResponse

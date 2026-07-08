@@ -4,13 +4,18 @@ from typing import Any
 
 
 class OpenRouterAPI:
-    def __init__(self, api_key: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str = "meta-llama/llama-3.3-70b-instruct",
+        api_url: str = "https://openrouter.ai/api/v1"
+    ) -> None:
         self.api_key = api_key
-        self.api_url: str = "https://openrouter.ai/api/v1"
-        self.model_name = "meta-llama/llama-3.3-70b-instruct"
+        self.model_name = model_name
+        self.api_url: api_url
         self.client = OpenAI(
             api_key=api_key,
-            base_url=self.api_url,
+            base_url=api_url
         )
 
     def generate_messages(self,

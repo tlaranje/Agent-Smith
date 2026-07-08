@@ -17,10 +17,10 @@ def main() -> None:
         "--output", default="../data/output/mbpp_task_solution.json"
     )
     parser.add_argument(
-        "--model-name", default="gemini"
+        "--model-name", default="gemini-2.5-flash-lite"
     )
     parser.add_argument(
-        "--provider-url"
+        "--provider-url", default="https://generativelanguage.googleapis.com"
     )
     args = parser.parse_args()
     task: MBPPTaskInput = MBPPTaskInput.from_file(

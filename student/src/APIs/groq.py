@@ -4,11 +4,19 @@ from typing import Any
 
 
 class GroqAPI:
-    def __init__(self, api_key: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str = "llama-3.3-70b-versatile",
+        api_url: str = "https://api.groq.com/openai/v1"
+    ) -> None:
         self.api_key = api_key
-        self.client = Groq(api_key=api_key)
-        self.api_url: str = "https://api.groq.com/openai/v1"
-        self.model_name = "llama-3.3-70b-versatile"
+        self.model_name = model_name
+        self.api_url = api_url
+        self.client = Groq(
+            api_key=api_key,
+            base_url=api_url
+        )
 
     def generate_messages(self,
                           messages: list[ChatCompletionMessageParam]) -> Any:

@@ -5,6 +5,7 @@ from ..sandbox import Sandbox
 from datetime import datetime
 import time
 import re
+import sys
 
 SYSTEM_PROMPT = """
 You are a coding agent solving Python programming tasks.
@@ -109,9 +110,18 @@ class MBPPAgent:
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
-                    except Exception:
+                    except Exception as e:
                         retries += 1
+                        print(
+                            f"[Warning] Error occurred with {self.llm.model_name}: {e}",
+                            file=sys.stderr,
+                        )
                         self.chose_llm()
+                        print(
+                            f"[Warning] LLM model switched to {self.llm.model_name}",
+                            file=sys.stderr,
+                        )
+
                 code = self.extract_code(response.content)
 
                 final_answer_shim = (
