@@ -1,6 +1,7 @@
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from typing import Callable
+from mcp.types import TextContent
+from typing import Callable, Any
 import threading
 import asyncio
 import os
@@ -19,8 +20,8 @@ class MCPClient:
         self._thread.start()
 
         self._session: ClientSession | None = None
-        self._stdio_cm = None
-        self._session_cm = None
+        self._stdio_cm: Any = None
+        self._session_cm: Any = None
 
         future = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
         future.result()
@@ -42,11 +43,17 @@ class MCPClient:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    async def _call_tool_async(self, name: str, /, **kwargs) -> str:
+    async def _call_tool_async(self, name: str, /, **kwargs: Any) -> str:
+        assert self._session is not None
         result = await self._session.call_tool(name, arguments=kwargs)
-        return result.content[0].text
+        if not result.content:
+            return ""
+        content = result.content[0]
+        if isinstance(content, TextContent):
+            return content.text
+        return ""
 
-    def call_tool(self, name: str, /, **kwargs) -> str:
+    def call_tool(self, name: str, /, **kwargs: Any) -> str:
         allowed_tools_name: list[str] = [t.name for t in self.list_tools()]
         if name not in allowed_tools_name:
             return (
@@ -80,6 +87,9 @@ class MCPClient:
             )
 
     def discover_tools(self) -> dict[str, Callable[..., str]]:
+        if self._session is None:
+            return {}
+
         future = asyncio.run_coroutine_threadsafe(
             self._session.list_tools(), self._loop
         )
@@ -91,13 +101,13 @@ class MCPClient:
         return wrappers
 
     def _make_wrapper(self, tool_name: str) -> Callable[..., str]:
-        def wrapper(**kwargs) -> str:
+        def wrapper(**kwargs: Any) -> str:
             return self.call_tool(tool_name, **kwargs)
         wrapper.__name__ = tool_name
         return wrapper
 
     def close(self) -> None:
-        async def _shutdown():
+        async def _shutdown() -> None:
             if self._session_cm:
                 await self._session_cm.__aexit__(None, None, None)
             if self._stdio_cm:
@@ -108,55 +118,11 @@ class MCPClient:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=2)
 
-    def list_tools(self):
+    def list_tools(self) -> Any:
+        if self._session is None:
+            return {}
+
         future = asyncio.run_coroutine_threadsafe(
             self._session.list_tools(), self._loop
         )
         return future.result().tools
-
-    def generate_manual(self) -> str:
-        tools = self.list_tools()
-
-        if not tools:
-            return "No tools are currently available in this sandbox."
-
-        sections = [
-            "## Available Tools",
-            "",
-            "The following tools are exposed by the connected MCP "
-            "server and can be called as Python functions inside "
-            "the sandbox.",
-            "",
-        ]
-
-        for tool in tools:
-            sections.append(f"### {tool.name}")
-
-            description = getattr(tool, "description", None)
-            if description:
-                sections.append(description.strip())
-
-            schema = getattr(tool, "inputSchema", None) or {}
-            properties = schema.get("properties", {})
-            required = set(schema.get("required", []))
-
-            if properties:
-                sections.append("")
-                sections.append("Arguments:")
-                for pname, pschema in properties.items():
-                    ptype = pschema.get("type", "any")
-                    pdesc = pschema.get("description", "")
-                    marker = "required" if pname in required else "optional"
-                    line = f"- {pname} ({ptype}, {marker})"
-                    if pdesc:
-                        line += f": {pdesc}"
-                    sections.append(line)
-            else:
-                sections.append("")
-                sections.append("Arguments: none")
-
-            sections.append("")
-            sections.append(f"Example: {tool.name}(...)")
-            sections.append("")
-
-        return "\n".join(sections).strip()

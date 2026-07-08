@@ -7,7 +7,7 @@ load_dotenv()
 
 @dataclass
 class LLMResponse:
-    content: str
+    content: str | None
     input_tokens: int
     output_tokens: int
     model_name: str

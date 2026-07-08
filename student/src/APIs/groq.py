@@ -1,4 +1,6 @@
 from groq import Groq
+from groq.types.chat import ChatCompletionMessageParam
+from typing import Any
 
 
 class GroqAPI:
@@ -8,7 +10,8 @@ class GroqAPI:
         self.api_url: str = "https://api.groq.com/openai/v1"
         self.model_name = "llama-3.3-70b-versatile"
 
-    def generate_messages(self, messages: list[dict]):
+    def generate_messages(self,
+                          messages: list[ChatCompletionMessageParam]) -> Any:
         from . import LLMResponse
 
         chat_completion = self.client.chat.completions.create(
@@ -16,9 +19,14 @@ class GroqAPI:
             model=self.model_name,
         )
 
+        usage = chat_completion.usage
+
+        input_tokens = usage.prompt_tokens if usage is not None else 0
+        output_tokens = usage.completion_tokens if usage is not None else 0
+
         return LLMResponse(
             content=chat_completion.choices[0].message.content,
-            input_tokens=chat_completion.usage.prompt_tokens,
-            output_tokens=chat_completion.usage.completion_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             model_name=self.model_name,
         )

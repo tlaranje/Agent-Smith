@@ -33,7 +33,7 @@ class Sandbox:
         )
         return out
 
-    def _final_answer(self, answer_string: str):
+    def _final_answer(self, answer_string: str) -> None:
         os.makedirs("/tmp/agent", exist_ok=True)
         with open(
             "/tmp/agent/final_result.py", "w", encoding="utf-8"
@@ -59,7 +59,11 @@ class Sandbox:
         return safe_builtins
 
     def build_namespace(self) -> dict:
-        namespace = {"__builtins__": self._restricted_builtins()}
+        if self.mcp_client is None:
+            return {}
+        namespace: dict[str, Any] = {
+            "__builtins__": self._restricted_builtins()
+        }
         namespace.update(self.mcp_client.discover_tools())
         namespace["final_answer"] = self._final_answer
         return namespace
@@ -215,7 +219,7 @@ class Sandbox:
                 command="uv",
                 args=[
                     "run", "python",
-                    f"{self._root_path}/mcp_tools_swebench.py",
+                    f"{self._root_path}/mcp_tools_swe_bench.py",
                 ],
                 env=server_env,
             )
@@ -228,8 +232,6 @@ class Sandbox:
                     command="tail -f /dev/null",
                     detach=True,
                     remove=True,
-                    network_mode="none",
-                    mem_limit=f"{self.config.max_memory_mb}m",
                     volumes={
                         os.path.join(
                             os.getcwd(), "../data/docker"

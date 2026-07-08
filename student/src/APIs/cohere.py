@@ -1,4 +1,19 @@
 import cohere
+from typing import Any
+from cohere.types import (
+    UserChatMessageV2,
+    AssistantChatMessageV2,
+    SystemChatMessageV2,
+    ToolChatMessageV2,
+)
+from typing import TypeAlias
+
+ChatMessage: TypeAlias = (
+    UserChatMessageV2
+    | AssistantChatMessageV2
+    | SystemChatMessageV2
+    | ToolChatMessageV2
+)
 
 
 class CohereAPI:
@@ -8,7 +23,7 @@ class CohereAPI:
         self.api_url: str = "https://api.cohere.com"
         self.model_name = "command-a-plus-05-2026"
 
-    def generate_messages(self, messages: list[dict]):
+    def generate_messages(self, messages: list[ChatMessage]) -> Any:
         from . import LLMResponse
 
         response = self.client.chat(
@@ -16,15 +31,36 @@ class CohereAPI:
             messages=messages,
         )
 
-        texts = [
-            item.text
-            for item in response.message.content
-            if hasattr(item, "text")
-        ]
+        content = response.message.content
+
+        texts = (
+            [
+                item.text
+                for item in content
+                if hasattr(item, "text")
+            ]
+            if content is not None
+            else []
+        )
+
+        usage = response.usage
+        tokens = usage.tokens if usage is not None else None
+
+        input_tokens = (
+            int(tokens.input_tokens)
+            if tokens is not None and tokens.input_tokens is not None
+            else 0
+        )
+
+        output_tokens = (
+            int(tokens.output_tokens)
+            if tokens is not None and tokens.output_tokens is not None
+            else 0
+        )
 
         return LLMResponse(
             content="\n".join(texts),
-            input_tokens=response.usage.tokens.input_tokens,
-            output_tokens=response.usage.tokens.output_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             model_name=self.model_name,
         )

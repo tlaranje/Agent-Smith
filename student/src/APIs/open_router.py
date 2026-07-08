@@ -1,4 +1,5 @@
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 from typing import Any
 
 
@@ -12,7 +13,8 @@ class OpenRouterAPI:
             base_url=self.api_url,
         )
 
-    def generate_messages(self, messages: list[dict]) -> Any:
+    def generate_messages(self,
+                          messages: list[ChatCompletionMessageParam]) -> Any:
         from . import LLMResponse
 
         response = self.client.chat.completions.create(
@@ -20,13 +22,11 @@ class OpenRouterAPI:
             messages=messages,
         )
 
-        print(response.usage)
-
         usage = response.usage
 
         return LLMResponse(
             content=response.choices[0].message.content,
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
             model_name=self.model_name,
         )
