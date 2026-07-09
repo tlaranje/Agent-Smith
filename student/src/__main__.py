@@ -53,6 +53,7 @@ def run_mcp_stdio(sandbox: Sandbox, mcp_command: str) -> None:
     server_env = dict(os.environ)
     server_env["IS_MCP_SERVER"] = "1"
     server_env["DOCKER_CONTAINER_ID"] = sandbox.container.id
+    server_env["SANDBOX_CONFIG_JSON"] = sandbox.config.model_dump_json()
 
     tokens = shlex.split(mcp_command)
     if not tokens:
@@ -93,6 +94,7 @@ def run_mcp_http(
     server_env = dict(os.environ)
     server_env["IS_MCP_SERVER"] = "1"
     server_env["DOCKER_CONTAINER_ID"] = sandbox.container.id
+    server_env["SANDBOX_CONFIG_JSON"] = sandbox.config.model_dump_json()
 
     root_path = Path(__file__).parent.parent.parent
     if benchmark == "SWE_BENCH":

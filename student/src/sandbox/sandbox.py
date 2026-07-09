@@ -1,3 +1,4 @@
+from docker.errors import BuildError, ImageNotFound
 from .sandbox_config import SandboxConfig
 from ..mcp import MCPClient
 from pathlib import Path
@@ -6,6 +7,7 @@ from rich import print
 import tarfile
 import base64
 import docker
+import shlex
 import io
 import os
 
@@ -26,6 +28,21 @@ class Sandbox:
         self.eval_script: str = ""
 
         self._root_path = Path(__file__).parent.parent.parent.parent
+
+    @classmethod
+    def attach(
+        cls,
+        agent: str,
+        container_id: str,
+        config: SandboxConfig | None = None,
+        image: str = "agent_sandbox:latest",
+    ) -> "Sandbox":
+        """Reconnect to an already-running container (used inside the
+        MCP tool server subprocess, which does not manage the
+        container's lifecycle itself)."""
+        instance = cls(agent=agent, image=image, config=config)
+        instance.container = instance.client.containers.get(container_id)
+        return instance
 
     def get_patch(self) -> str:
         out, _ = self._exec(
@@ -81,6 +98,13 @@ class Sandbox:
         tarstream.seek(0)
 
         self.container.put_archive(directory, tarstream)
+
+    def _write_file(self, filepath: str, content: str) -> None:
+        """Alias used by the SWE-bench tools (mkdir -p first, since the
+        target directory may not exist yet, e.g. /tmp/eval_script.sh)."""
+        directory = os.path.dirname(filepath)
+        self._exec(f"mkdir -p {directory}")
+        self._write_code_to_container(content, filepath)
 
     def execute(
         self, code: str, test_list: list[str] | None = None
@@ -180,7 +204,7 @@ class Sandbox:
                 forcerm=True,
             )
 
-        except docker.errors.BuildError as e:
+        except BuildError as e:
             raise e
 
         except Exception as e:
@@ -193,6 +217,7 @@ class Sandbox:
         server_env = dict(os.environ)
         server_env["IS_MCP_SERVER"] = "1"
         server_env["DOCKER_CONTAINER_ID"] = self.container.id
+        server_env["SANDBOX_CONFIG_JSON"] = self.config.model_dump_json()
         server_env["EVAL_SCRIPT_B64"] = base64.b64encode(
             self.eval_script.encode("utf-8")
         ).decode("ascii")
@@ -251,7 +276,7 @@ class Sandbox:
                 "[bold green][+][/bold green] Image pulled "
                 "successfully."
             )
-        except docker.errors.ImageNotFound:
+        except ImageNotFound:
             raise RuntimeError(
                 f"Image not found on Docker Hub: {self.image}"
             )
@@ -272,11 +297,26 @@ class Sandbox:
             except Exception as e:
                 raise e
 
-    def _exec(self, cmd: str) -> tuple[str, int]:
-        result = self.container.exec_run(["bash", "-c", cmd])
+    def _exec(
+        self, cmd: str, timeout: int | None = None
+    ) -> tuple[str, int]:
+        effective_timeout = (
+            timeout
+            if timeout is not None
+            else self.config.max_execution_time_seconds
+        )
+        wrapped = (
+            f"timeout {effective_timeout}s bash -c " + shlex.quote(cmd)
+        )
+        result = self.container.exec_run(["bash", "-c", wrapped])
         output = (
             result.output.decode("utf-8", errors="replace")
             if result.output
             else ""
         )
+        if result.exit_code == 124:
+            output += (
+                f"\n[TIMEOUT] Command exceeded "
+                f"{effective_timeout} seconds."
+            )
         return output, result.exit_code

@@ -1,48 +1,21 @@
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-import docker
+from student.src.sandbox import Sandbox, SandboxConfig
 import os
 
 mcp = FastMCP("mbpp-tools")
 
 
-class SharedSandboxWrapper:
-    def __init__(self, container):
-        self.container = container
-
-    def execute(self, code: str, test_list: list[str]) -> tuple[str, bool]:
-        import io
-        import tarfile
-
-        full_script = code + "\n" + "\n".join(test_list) + "\n"
-
-        tarstream = io.BytesIO()
-        with tarfile.open(fileobj=tarstream, mode="w") as tar:
-            data = full_script.encode("utf-8")
-            tarinfo = tarfile.TarInfo(name="_exec_script.py")
-            tarinfo.size = len(data)
-            tar.addfile(tarinfo, io.BytesIO(data))
-        tarstream.seek(0)
-
-        self.container.put_archive("/tmp/agent", tarstream)
-
-        exec_result = self.container.exec_run(
-            ["python3", "/tmp/agent/_exec_script.py"],
-            workdir="/tmp/agent",
-        )
-
-        output = exec_result.output.decode("utf-8", errors="replace")
-        success = exec_result.exit_code == 0
-
-        return output, success
+def _load_config() -> SandboxConfig:
+    raw = os.environ.get("SANDBOX_CONFIG_JSON", "")
+    if raw:
+        return SandboxConfig.model_validate_json(raw)
+    return SandboxConfig()
 
 
-class MBPPToolState:
-    def __init__(self, sandbox: SharedSandboxWrapper | None) -> None:
-        self.sandbox = sandbox
-        self.current_task_tests: list[str] = []
-
+sandbox: Sandbox | None = None
+current_task_tests: list[str] = []
 
 if os.environ.get("IS_MCP_SERVER"):
     container_id = os.environ.get("DOCKER_CONTAINER_ID", "")
@@ -50,19 +23,14 @@ if os.environ.get("IS_MCP_SERVER"):
         raise RuntimeError(
             "IS_MCP_SERVER=1 mas DOCKER_CONTAINER_ID não está definido."
         )
-
-    client = docker.from_env()
-    container = client.containers.get(container_id)
-    _state = MBPPToolState(SharedSandboxWrapper(container))
-else:
-    _state = MBPPToolState(None)
-
-
-mcp = FastMCP("mbpp-tools")
+    sandbox = Sandbox.attach(
+        "MBPP", container_id=container_id, config=_load_config()
+    )
 
 
 @mcp.custom_route("/initialize", methods=["POST"])
 async def initialize(request: Request) -> JSONResponse:
+    global sandbox, current_task_tests
     payload = await request.json()
 
     container_id = payload.get("docker_container_id")
@@ -73,27 +41,29 @@ async def initialize(request: Request) -> JSONResponse:
             {"error": "docker_container_id is required"}, status_code=400
         )
 
-    client = docker.from_env()
-    container = client.containers.get(container_id)
-    _state.sandbox = SharedSandboxWrapper(container)
-
-    test_list = task.get("test_list", [])
-    _state.current_task_tests = test_list
+    sandbox = Sandbox.attach(
+        "MBPP", container_id=container_id, config=_load_config()
+    )
+    current_task_tests = task.get("test_list", [])
 
     return JSONResponse(
         {
             "status": "ok",
-            "message": f"Session initialized with {len(test_list)} tests.",
+            "message": (
+                f"Session initialized with "
+                f"{len(current_task_tests)} tests."
+            ),
         }
     )
 
 
 @mcp.tool()
 def set_current_task_tests(test_list: list[str] | None = None) -> str:
+    global current_task_tests
     if test_list is None:
         return "ERROR: test_list is required."
 
-    _state.current_task_tests = test_list
+    current_task_tests = test_list
     return f"Task configured successfully with {len(test_list)} tests."
 
 
@@ -102,11 +72,9 @@ def run_tests(code: str | None = None) -> str:
     if code is None:
         return "ERROR: code is required."
 
-    sandbox = _state.sandbox
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    current_task_tests = _state.current_task_tests
     if not current_task_tests:
         return (
             "Error: No active task. Call set_current_task_tests "

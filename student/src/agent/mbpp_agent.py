@@ -138,28 +138,14 @@ class MBPPAgent:
                     "        _f.write(answer_string)\n\n"
                 )
 
-                if "final_answer(" in code:
-                    import io
-                    import contextlib
-                    stdout_capture = io.StringIO()
-                    try:
-                        namespace = self.sandbox.build_namespace()
-                        with contextlib.redirect_stdout(stdout_capture), \
-                                contextlib.redirect_stderr(stdout_capture):
-                            exec(code, namespace, namespace)
-                        done = True
-                        sandbox_output = "Task completed using final_answer."
-                    except Exception as e:
-                        done = False
-                        sandbox_output = f"Error executing final_answer: {e}"
-                else:
-                    sandbox_output = self.sandbox.mcp_client.call_tool(
-                        "run_tests", code=code
-                    )
-                    done = (
-                        "SUCCESS: All tests passed successfully!"
-                        in sandbox_output
-                    )
+                code = self.extract_code(response.content)
+                sandbox_output = self.sandbox.mcp_client.call_tool(
+                    "run_tests", code=code
+                )
+                done = (
+                    "SUCCESS: All tests passed successfully!" in sandbox_output
+                )
+
                 steps.append(StepMetrics(
                     step=iteration + 1,
                     input_tokens=response.input_tokens,
