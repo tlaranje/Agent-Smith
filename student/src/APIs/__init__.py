@@ -28,7 +28,7 @@ def _load_keys(prefix: str) -> list[str]:
 
 def get_llms(
     priority_model_name: str,
-    priority_provider_url: str = "",
+    priority_provider_url: str
 ) -> dict[str, list]:
     from .gemini import GeminiAPI
     from .groq import GroqAPI

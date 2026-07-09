@@ -35,7 +35,7 @@ def main() -> None:
     )
 
     agent: MBPPAgent = MBPPAgent(
-        sandbox, get_llms(args.model_name)
+        sandbox, get_llms(args.model_name, args.provider_url)
     )
     solution = agent.solve(task)
     output_path = Path(args.output)
