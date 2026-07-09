@@ -84,7 +84,9 @@ def _wait_for_server(url: str, timeout: float = 15.0) -> None:
     )
 
 
-def run_mcp_http(sandbox: Sandbox, url: str, task_file: str) -> None:
+def run_mcp_http(
+    sandbox: Sandbox, url: str, task_file: str, benchmark: str
+) -> None:
     sandbox.build("..")
     sandbox.start()
 
@@ -93,7 +95,10 @@ def run_mcp_http(sandbox: Sandbox, url: str, task_file: str) -> None:
     server_env["DOCKER_CONTAINER_ID"] = sandbox.container.id
 
     root_path = Path(__file__).parent.parent.parent
-    server_script = root_path / "mcp_tools_mbpp.py"
+    if benchmark == "SWE_BENCH":
+        server_script = root_path / "mcp_tools_swebench.py"
+    else:
+        server_script = root_path / "mcp_tools_mbpp.py"
 
     server_process = subprocess.Popen(
         [sys.executable, str(server_script), "--http", "--port", "8000"],
@@ -118,6 +123,14 @@ def run_mcp_http(sandbox: Sandbox, url: str, task_file: str) -> None:
         else:
             print(f"[bold red]MCP Server Error:[/bold red] {response.text}")
 
+        print(
+            "[cyan]MCP server is running. Press Ctrl+C to stop.[/cyan]"
+        )
+        while server_process.poll() is None:
+            time.sleep(0.5)
+
+    except KeyboardInterrupt:
+        print("[yellow]Shutting down MCP server...[/yellow]")
     except httpx.RequestError as exc:
         raise httpx.RequestError(
             "[bold red]Network error connecting to "
@@ -171,7 +184,9 @@ def main() -> None:
             run_mcp_stdio(sandbox, args.mcp_stdio)
 
         elif args.mcp_server:
-            run_mcp_http(sandbox, args.mcp_server, args.sandbox_template)
+            run_mcp_http(
+                sandbox, args.mcp_server, args.sandbox_template, benchmark
+            )
 
         else:
             run_interactive_cli(sandbox)

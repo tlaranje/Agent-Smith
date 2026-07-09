@@ -37,6 +37,7 @@ class CohereAPI:
         response = self.client.chat(
             model=self.model_name,
             messages=messages,
+            stop_sequences=["<end_code>"],
         )
 
         content = response.message.content

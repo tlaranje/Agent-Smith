@@ -1,10 +1,10 @@
 from mcp.server.fastmcp import FastMCP
-from rich import print
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 import docker
 import base64
 import tarfile
 import io
-import sys
 import os
 import re
 
@@ -27,9 +27,14 @@ class ContainerShim:
         self._exec("git config --global --add safe.directory /testbed")
 
     def _exec(self, cmd: str) -> tuple[str, int]:
-        result = self._container.exec_run(["bash", "-c", cmd])
-        output = result.output.decode("utf-8") if result.output else ""
-        return output, result.exit_code
+        result = self._container.exec_run(["bash", "-c", cmd], stream=False)
+        raw_output = result.output
+        output = (
+            raw_output.decode("utf-8", errors="replace")
+            if isinstance(raw_output, bytes) else ""
+        )
+        exit_code = result.exit_code if result.exit_code is not None else 1
+        return output, exit_code
 
     def _write_file(self, filepath: str, content: str) -> None:
         directory = os.path.dirname(filepath)
@@ -66,6 +71,36 @@ if os.environ.get("IS_MCP_SERVER"):
     _state = SWEBenchToolState(sandbox=ContainerShim(container_id))
 else:
     _state = SWEBenchToolState(sandbox=None)
+
+
+@mcp.custom_route("/initialize", methods=["POST"])
+async def initialize(request: Request) -> JSONResponse:
+    payload = await request.json()
+
+    container_id = payload.get("docker_container_id")
+    task = payload.get("task", {})
+
+    if not container_id:
+        return JSONResponse(
+            {"error": "docker_container_id is required"}, status_code=400
+        )
+
+    shim = ContainerShim(container_id)
+    eval_script = task.get("eval_script", "")
+    if eval_script:
+        shim.eval_script = eval_script
+
+    _state.sandbox = shim
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "message": (
+                f"Session initialized for instance "
+                f"{task.get('instance_id', 'unknown')}."
+            ),
+        }
+    )
 
 
 @mcp.tool()
@@ -215,15 +250,19 @@ def run_tests() -> str:
 @mcp.tool()
 def run_command(command: str, workdir: str = "/testbed") -> str:
     """Execute a shell command in the specified working directory."""
+    if not _state.sandbox:
+        return "ERROR: No active sandbox container session found."
+
     out, code = _state.sandbox._exec(f"cd {workdir} && {command}")
     return f"Exit code: {code}\nOutput:\n{out}"
 
 
 @mcp.tool()
 def get_patch() -> str:
-    print("get_patch: ", _state.sandbox._exec("git status"), file=sys.stderr)
-    print("get_path:", _state.sandbox._exec("ls"), file=sys.stderr)
     """Retrieve the unified git diff of all changes made to /testbed."""
+    if not _state.sandbox:
+        return "ERROR: No active sandbox container session found."
+
     out, _ = _state.sandbox._exec(
         "cd /testbed && git -c core.fileMode=false diff"
     )
@@ -231,4 +270,15 @@ def get_patch() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--http", action="store_true")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+
+    if args.http:
+        mcp.settings.port = args.port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()

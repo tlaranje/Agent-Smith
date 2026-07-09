@@ -34,6 +34,7 @@ class MistralAPI:
         response = self.client.chat.complete(
             model=self.model_name,
             messages=messages,
+            stop=["<end_code>"]
         )
 
         usage = response.usage

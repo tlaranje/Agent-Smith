@@ -1,6 +1,7 @@
+from google.genai.types import GenerateContentConfig
+from google.genai.types import HttpOptions
 from google import genai
 from typing import Any
-from google.genai.types import HttpOptions
 
 
 class GeminiAPI:
@@ -32,6 +33,7 @@ class GeminiAPI:
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=contents,
+            config=GenerateContentConfig(stop_sequences=["<end_code>"]),
         )
 
         usage = response.usage_metadata

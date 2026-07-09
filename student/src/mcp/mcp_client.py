@@ -1,5 +1,6 @@
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import TextContent
 from typing import Callable, Any
 import threading
@@ -9,11 +10,19 @@ import os
 
 class MCPClient:
     def __init__(
-        self, command: str, args: list[str], env: dict | None = None
+        self,
+        command: str | None = None,
+        args: list[str] | None = None,
+        env: dict | None = None,
+        url: str | None = None,
     ) -> None:
-        self._command = command
-        self._args = args
+        if not command and not url:
+            raise ValueError("MCPClient requires either command or url")
+
+        self._command: str | None = command
+        self._args = args or []
         self._env = env if env is not None else dict(os.environ)
+        self._url = url
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -22,18 +31,26 @@ class MCPClient:
         self._session: ClientSession | None = None
         self._stdio_cm: Any = None
         self._session_cm: Any = None
+        self._http_cm: Any = None
 
         future = asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
         future.result()
 
     async def _connect(self) -> None:
-        server_params = StdioServerParameters(
-            command=self._command,
-            args=self._args,
-            env=self._env,
-        )
-        self._stdio_cm = stdio_client(server_params)
-        read_stream, write_stream = await self._stdio_cm.__aenter__()
+        if self._url:
+            self._http_cm = streamablehttp_client(self._url)
+            read_stream, write_stream, _get_session_id = (
+                await self._http_cm.__aenter__()
+            )
+        else:
+            assert self._command is not None
+            server_params = StdioServerParameters(
+                command=self._command,
+                args=self._args,
+                env=self._env,
+            )
+            self._stdio_cm = stdio_client(server_params)
+            read_stream, write_stream = await self._stdio_cm.__aenter__()
 
         self._session_cm = ClientSession(read_stream, write_stream)
         self._session = await self._session_cm.__aenter__()
@@ -112,6 +129,8 @@ class MCPClient:
                 await self._session_cm.__aexit__(None, None, None)
             if self._stdio_cm:
                 await self._stdio_cm.__aexit__(None, None, None)
+            if self._http_cm:
+                await self._http_cm.__aexit__(None, None, None)
 
         future = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
         future.result()
@@ -126,3 +145,64 @@ class MCPClient:
             self._session.list_tools(), self._loop
         )
         return future.result().tools
+
+    def generate_manual(self) -> str:
+        tools = self.list_tools()
+
+        if not tools:
+            return "No tools are currently available."
+
+        sections = [
+            "## Available Tools",
+            "",
+            "Call tools as Python functions.",
+            "Example:",
+            "result = tool_name(arg=value)",
+            "",
+        ]
+
+        for tool in tools:
+            sections.append(f"### {tool.name}")
+
+            if tool.description:
+                sections.append(tool.description.strip())
+
+            schema = tool.inputSchema or {}
+            props = schema.get("properties", {})
+            required = set(schema.get("required", []))
+
+            if props:
+                sections.append("")
+                sections.append("Arguments:")
+
+                for name, info in props.items():
+                    typ = info.get("type", "any")
+                    desc = info.get("description", "")
+                    req = "required" if name in required else "optional"
+
+                    line = f"- {name} ({typ}, {req})"
+
+                    if desc:
+                        line += f": {desc}"
+
+                    sections.append(line)
+
+                example = ", ".join(
+                    f"{name}=..."
+                    for name in props
+                )
+                sections.append("")
+                sections.append(
+                    f"Example: result = {tool.name}({example})"
+                )
+            else:
+                sections.append("")
+                sections.append("Arguments: none")
+                sections.append("")
+                sections.append(
+                    f"Example: result = {tool.name}()"
+                )
+
+            sections.append("")
+
+        return "\n".join(sections).strip()

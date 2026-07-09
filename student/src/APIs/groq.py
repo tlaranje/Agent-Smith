@@ -25,6 +25,7 @@ class GroqAPI:
         chat_completion = self.client.chat.completions.create(
             messages=messages,
             model=self.model_name,
+            stop=["<end_code>"]
         )
 
         usage = chat_completion.usage

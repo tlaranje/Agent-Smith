@@ -139,13 +139,6 @@ class Sandbox:
                 False,
             )
 
-        if res.exit_code == 124:
-            return (
-                f"{output}"
-                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
-                False
-            )
-
         if res.exit_code != 0:
             return (
                 f"[RUNTIME ERROR]\n{output}",
@@ -219,7 +212,7 @@ class Sandbox:
                 command="uv",
                 args=[
                     "run", "python",
-                    f"{self._root_path}/mcp_tools_swe_bench.py",
+                    f"{self._root_path}/mcp_tools_swebench.py",
                 ],
                 env=server_env,
             )
@@ -232,6 +225,8 @@ class Sandbox:
                     command="tail -f /dev/null",
                     detach=True,
                     remove=True,
+                    network_mode="none",
+                    mem_limit=f"{self.config.max_memory_mb}m",
                     volumes={
                         os.path.join(
                             os.getcwd(), "../data/docker"

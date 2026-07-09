@@ -1,38 +1,32 @@
 from typing import Any, Optional, List
 from pydantic import BaseModel, Field
 from ..parser import MBPPTaskInput
+import xml.etree.ElementTree as ET
 from ..sandbox import Sandbox
 from datetime import datetime
+import json
 import time
-import re
 import sys
+import re
 
 SYSTEM_PROMPT = """
-You are a coding agent solving Python programming tasks.
+You are an expert Python programmer.
 
-You operate in a loop: each iteration you write Python code that gets
-executed inside a secure sandbox.
-You can see the stdout/stderr or exceptions of your code in the next
-iteration as observations.
+You solve one programming task at a time.
 
-## Objectives
-1. Read the task description and function signature.
-2. Write the implementation alongside a test runner execution if you
-want to verify it.
-3. Once your code passes the required test cases (or you verify it works),
-you MUST submit using:
-   final_answer("your complete clean function code here")
+The available sandbox tools are documented below.
 
-## Formatting Rules
-Always respond strictly with Python code wrapped inside a markdown code block:
-```python
-# You can write helper logic, run prints, or execute the required assert
-# statements here to test.
-def your_function():
-    ...
+Use the tools as normal Python functions.
 
-# If tests pass, call this to finish the task:
-final_answer("def your_function():\\n    ...")
+Requirements:
+
+- Produce correct Python code.
+- Follow the requested function signature exactly.
+- Use the provided tools whenever necessary.
+- Do not import unavailable modules.
+- Do not access resources outside the sandbox.
+- Return only executable Python code.
+- Do not include markdown or explanations.
 """
 
 
@@ -89,16 +83,25 @@ class MBPPAgent:
         self.llm = self.llms[self.current_llm_index]
 
     def solve(self, task: MBPPTaskInput) -> SolutionOutput:
-        assert self.sandbox.mcp_client is not None
-
         start_time = time.time()
         steps: list[StepMetrics] = []
         total_requests = 0
         total_input_tokens = 0
         total_output_tokens = 0
-        messages = [{"role": "user", "content": self.build_prompt(task)}]
 
         self.sandbox.start()
+        assert self.sandbox.mcp_client is not None
+
+        manual = self.sandbox.mcp_client.generate_manual()
+
+        prompt = self.build_prompt(task, manual)
+
+        messages = [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ]
 
         try:
             for iteration in range(self.max_iterations):
@@ -177,7 +180,7 @@ class MBPPAgent:
                         benchmark="mbpp",
                         success=True,
                         solution=final_answer_shim + code,
-                        system_prompt=SYSTEM_PROMPT,
+                        system_prompt=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -201,7 +204,7 @@ class MBPPAgent:
             benchmark="mbpp",
             success=False,
             solution="",
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=prompt,
             iterations=self.max_iterations,
             total_requests=total_requests,
             total_input_tokens=total_input_tokens,
@@ -222,26 +225,90 @@ class MBPPAgent:
         )
 
     @staticmethod
-    def build_prompt(task: MBPPTaskInput) -> str:
-        """Initial message — includes system prompt + task description."""
+    def build_prompt(task: MBPPTaskInput, manual: str) -> str:
         task_data = task.model_dump()
+
         lines = [
             SYSTEM_PROMPT,
-            "\n## Task",
+            "",
+            manual,
+            "",
+            "## Task",
             f"Description: {task_data['task_definition']}",
-            f"Function signature: {task_data['function_definition']}",
+            (
+                "Function signature: "
+                f"{task_data['function_definition']}"
+            ),
             "Tests to pass:",
-            *[f"  {t}" for t in task_data['test_list']],
-            "\nWrite your solution:",
+            *[f"  {t}" for t in task_data["test_list"]],
+            "",
+            "Write your solution:",
         ]
+
         return "\n".join(lines)
 
     @staticmethod
     def extract_code(text: str) -> str:
-        pattern = r"```[\w+]*\n([\s\S]*?)\n```"
-        match = re.findall(pattern, text)
-
+        match = re.search(
+            r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE
+        )
         if match:
-            return "\n".join(match).strip()
+            return match.group(1).strip()
+
+        match = re.search(
+            r"<invoke\s+name=\"([^\"]+)\">(.*?)</invoke>", text, re.DOTALL
+        )
+        if match:
+            tool = match.group(1)
+            body = match.group(2)
+            args = {}
+
+            for param in re.finditer(
+                r"<parameter\s+name=\"([^\"]+)\">(.*?)</parameter>",
+                body, re.DOTALL
+            ):
+                args[param.group(1)] = param.group(2).strip()
+
+            params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            return f"result = {tool}({params})"
+
+        match = re.search(
+            r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL,
+        )
+        if match:
+            try:
+                obj = json.loads(match.group(1))
+                tool = obj["name"]
+                args = obj.get("arguments", {})
+                params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+                return f"result = {tool}({params})"
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        match = re.search(
+            r"Action:\s*(\w+)\s*"r"Action Input:\s*(\{.*?\})", text, re.DOTALL,
+        )
+        if match:
+            tool = match.group(1)
+            try:
+                args = json.loads(match.group(2))
+            except json.JSONDecodeError:
+                args = {}
+
+            params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            return f"result = {tool}({params})"
+
+        try:
+            root = ET.fromstring(text)
+            if root.tag == "invoke":
+                tool = root.attrib["name"]
+                args = {
+                    child.attrib["name"]: child.text or ""
+                    for child in root.findall("parameter")
+                }
+                params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+                return f"result = {tool}({params})"
+        except ET.ParseError:
+            pass
 
         return text.strip()
