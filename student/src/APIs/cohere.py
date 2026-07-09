@@ -17,11 +17,19 @@ ChatMessage: TypeAlias = (
 
 
 class CohereAPI:
-    def __init__(self, api_key: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str = "command-a-plus-05-2026",
+        api_url: str = "https://api.cohere.com"
+    ) -> None:
         self.api_key = api_key
-        self.client = cohere.ClientV2(api_key)
-        self.api_url: str = "https://api.cohere.com"
-        self.model_name = "command-a-plus-05-2026"
+        self.model_name = model_name
+        self.api_url: str = api_url
+        self.client = cohere.ClientV2(
+            api_key=api_key,
+            base_url=api_url
+        )
 
     def generate_messages(self, messages: list[ChatMessage]) -> Any:
         from . import LLMResponse

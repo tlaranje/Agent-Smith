@@ -17,10 +17,10 @@ def main() -> None:
         "--output", default="../data/output/swebench_task_solution.json"
     )
     parser.add_argument(
-        "--model-name", default="gemini"
+        "--model-name", default="gemini-2.5-flash-lite"
     )
     parser.add_argument(
-        "--provider-url"
+        "--provider-url", default="https://generativelanguage.googleapis.com"
     )
     args = parser.parse_args()
     task: SWEBenchTaskInput = SWEBenchTaskInput.from_file(
@@ -28,7 +28,8 @@ def main() -> None:
     )
     sandbox: Sandbox = Sandbox("SWE_BENCH", task.docker_image)
     agent: SWEBenchAgent = SWEBenchAgent(
-        get_llms(args.model_name), sandbox, max_iterations=30
+        get_llms(args.model_name, args.provider_url),
+        sandbox, max_iterations=30
     )
     solution = agent.solve(task)
     output_path = Path(args.output)

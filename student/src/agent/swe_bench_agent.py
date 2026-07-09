@@ -6,6 +6,7 @@ from datetime import datetime
 import json
 import time
 import re
+import sys
 
 SYSTEM_PROMPT: str = """
 You are an expert software engineer tasked with fixing bugs in real
@@ -467,7 +468,18 @@ class SWEBenchAgent:
                         break
                     except Exception:
                         retries += 1
+                        print(
+                            "[Warning] Error occurred"
+                            f" with {self.llm.model_name}",
+                            file=sys.stderr,
+                        )
                         self.chose_llm()
+
+                        print(
+                            "[Warning] Switching API key"
+                            f" of LLM model {self.llm.model_name}",
+                            file=sys.stderr,
+                        )
 
                 total_input_tokens += response.input_tokens
                 total_output_tokens += response.output_tokens
