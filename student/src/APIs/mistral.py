@@ -25,7 +25,7 @@ class MistralAPI:
         self.api_url = api_url
         self.client = Mistral(
             api_key=api_key,
-            base_url=api_url
+            server_url=api_url
         )
 
     def generate_messages(self, messages: list[Message]) -> Any:

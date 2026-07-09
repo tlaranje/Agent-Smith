@@ -119,8 +119,8 @@ class MBPPAgent:
                         )
                         self.chose_llm()
                         print(
-                            "[Warning] LLM model"
-                            f" switched to {self.llm.model_name}",
+                            "[Warning] Switching API key"
+                            f" of LLM model {self.llm.model_name}",
                             file=sys.stderr,
                         )
 

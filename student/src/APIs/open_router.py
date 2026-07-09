@@ -12,7 +12,7 @@ class OpenRouterAPI:
     ) -> None:
         self.api_key = api_key
         self.model_name = model_name
-        self.api_url: api_url
+        self.api_url = api_url
         self.client = OpenAI(
             api_key=api_key,
             base_url=api_url
