@@ -8,7 +8,7 @@ class GroqAPI:
         self,
         api_key: str,
         model_name: str = "llama-3.3-70b-versatile",
-        api_url: str = "https://api.groq.com/openai/v1"
+        api_url: str = "https://api.groq.com"
     ) -> None:
         self.api_key = api_key
         self.model_name = model_name
