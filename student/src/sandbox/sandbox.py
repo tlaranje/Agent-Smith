@@ -214,7 +214,7 @@ class Sandbox:
                 command="uv",
                 args=[
                     "run", "python",
-                    f"{self._root_path}/mcp_tools_swe_bench.py",
+                    f"{self._root_path}/mcp_tools_swebench.py",
                 ],
                 env=server_env,
             )
