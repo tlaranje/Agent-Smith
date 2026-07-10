@@ -28,6 +28,15 @@ Requirements:
 - Do not modify unrelated code.
 - Run tests before finishing whenever appropriate.
 - When the fix is complete, call final_answer().
+- Every response must contain exactly one fenced ```python code block with a
+  single tool call. Do not respond with plain prose only.
+- Before calling final_answer(), you MUST have called run_tests() at least once
+  and confirmed the relevant tests pass. Never claim
+  success without running tests.
+- Stay focused on the file(s) directly related to
+  the issue. If you find yourself
+  editing unrelated files, stop and reconsider whether you are still solving
+  the original problem.
 - If edit_file fails because old_str was not found, do not guess
   again or move on to something else: call read_file on the exact
   region first to see the precise text (including indentation, line
@@ -245,6 +254,21 @@ class SWEBenchAgent:
                 if tool_name == "final_answer":
                     patch = self.sandbox.get_patch()
 
+                    if not patch.strip():
+                        messages.append(
+                            {"role": "assistant", "content": llm_output}
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "ERROR: git diff is empty — no changes have "
+                                "been made yet. Locate the correct file and "
+                                "edit it, then run run_tests() before "
+                                "calling final_answer() again."
+                            ),
+                        })
+                        continue
+
                     steps.append(StepMetrics(
                         step=iteration + 1,
                         input_tokens=response.input_tokens,
@@ -272,9 +296,17 @@ class SWEBenchAgent:
                         steps=steps,
                     )
 
-                tool_output = self.sandbox.mcp_client.call_tool(
-                    tool_name if tool_name else "", **tool_args
-                )
+                if tool_name is None:
+                    tool_output = (
+                        "ERROR: I could not parse a tool call from your last "
+                        "message. Respond with a fenced ```python block "
+                        "containing exactly one tool call, e.g.:\n"
+                        "```python\nresult = read_file(filepath=\"...\")\n```"
+                    )
+                else:
+                    tool_output = self.sandbox.mcp_client.call_tool(
+                        tool_name, **tool_args
+                    )
 
                 steps.append(StepMetrics(
                     step=iteration + 1,
@@ -417,9 +449,20 @@ class SWEBenchAgent:
             r"```(?:python)?\s*(.*?)```", llm_output, re.DOTALL | re.IGNORECASE
         )
 
-        code = (
-            code_match.group(1).strip() if code_match else llm_output.strip()
-        )
+        if code_match:
+            code = code_match.group(1).strip()
+        else:
+            known_tools = (
+                "read_file", "edit_file", "list_files", "search_code",
+                "search_function_or_class_definition_in_code",
+                "find_references", "run_tests", "run_command", "final_answer",
+            )
+            m = re.search(r"\b([a-zA-Z_]\w*)\s*\([^()]*\)", llm_output)
+            code = (
+                m.group(0)
+                if m and m.group(1) in known_tools
+                else llm_output.strip()
+            )
 
         try:
             tree = ast.parse(code)
