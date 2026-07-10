@@ -30,9 +30,6 @@ def main() -> None:
     sandbox = Sandbox("MBPP")
     sandbox.build("..")
     sandbox.start()
-    sandbox.mcp_client.call_tool(
-            "set_current_task_tests", test_list=task.test_list
-    )
 
     agent: MBPPAgent = MBPPAgent(
         sandbox, get_llms(args.model_name, args.provider_url)

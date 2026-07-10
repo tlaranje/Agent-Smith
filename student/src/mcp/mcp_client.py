@@ -146,8 +146,9 @@ class MCPClient:
         )
         return future.result().tools
 
-    def generate_manual(self) -> str:
-        tools = self.list_tools()
+    def generate_manual(self, exclude: set[str] | None = None) -> str:
+        exclude = exclude or set()
+        tools = [t for t in self.list_tools() if t.name not in exclude]
 
         if not tools:
             return "No tools are currently available."

@@ -25,7 +25,6 @@ class OpenRouterAPI:
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
-            stop=["<end_code>", "```\n"],
         )
 
         usage = response.usage

@@ -5,6 +5,9 @@ import asyncio
 import httpx
 import docker
 
+# uv run sandbox --mcp-server http://localhost:8000
+# ../data/input/swebench_task.json
+
 
 async def main():
     client = docker.from_env()

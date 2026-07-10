@@ -6,6 +6,7 @@ from datetime import datetime
 import json
 import time
 import re
+import ast
 import sys
 
 SYSTEM_PROMPT = """
@@ -27,6 +28,14 @@ Requirements:
 - Do not modify unrelated code.
 - Run tests before finishing whenever appropriate.
 - When the fix is complete, call final_answer().
+- If edit_file fails because old_str was not found, do not guess
+  again or move on to something else: call read_file on the exact
+  region first to see the precise text (including indentation, line
+  breaks, and surrounding characters), then retry edit_file with an
+  old_str copied verbatim from that output.
+- old_str must match a single contiguous snippet of the file exactly,
+  character for character. Never split it across a comma, a paren, or
+  a line break that isn't actually in the source.
 - Return only one tool invocation at a time.
 - Do not explain your reasoning.
 """
@@ -39,8 +48,7 @@ class StepMetrics(BaseModel):
     cycle.
     All fields are required for evaluation, empty strings are
     acceptable
-    for steps where a field doesn't apply (e.g., no sandbox execution
-    ).
+    for steps where a field doesn't apply (e.g., no sandbox execution).
     """
     step: int = Field(
         ..., description="1-indexed iteration number"
@@ -94,12 +102,6 @@ class StepMetrics(BaseModel):
 
 
 class SolutionOutput(BaseModel):
-    """Output from student solution, required format for evaluation.
-    This is the JSON structure your agent must produce and write to
-    solution.json.
-    The moulinette validates this against task correctness and
-    metrics limits.
-    """
     task_id: str = Field(
         ...,
         description=(
@@ -156,6 +158,17 @@ class SolutionOutput(BaseModel):
     )
 
 
+def _coerce(value: str) -> Any:
+    """Try to interpret a raw XML-captured string as a Python/JSON
+    literal (int, float, bool, list, dict...) before falling back to
+    the original string. Only the <invoke> XML format needs this --
+    the JSON/ReAct formats already get correct types from json.loads."""
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return value
+
+
 class SWEBenchAgent:
     def __init__(self, llms: dict[str, list], sandbox: Sandbox,
                  max_iterations: int = 10) -> None:
@@ -205,11 +218,11 @@ class SWEBenchAgent:
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
-                    except Exception:
+                    except Exception as e:
                         retries += 1
                         print(
                             "[Warning] Error occurred"
-                            f" with {self.llm.model_name}",
+                            f" with {self.llm.model_name}: {e}",
                             file=sys.stderr,
                         )
                         self.chose_llm()
@@ -223,7 +236,9 @@ class SWEBenchAgent:
                 total_input_tokens += response.input_tokens
                 total_output_tokens += response.output_tokens
 
-                llm_output = response.content or ""
+                llm_output = response.content or (
+                    "(empty response from the model)"
+                )
 
                 tool_name, tool_args = self.extract_tool_call(llm_output)
 
@@ -362,7 +377,7 @@ class SWEBenchAgent:
                 (r"<parameter\s+name=\"([^\"]+)\">"r"(.*?)</parameter>"),
                 match.group(2), re.DOTALL,
             ):
-                args[param.group(1)] = param.group(2).strip()
+                args[param.group(1)] = _coerce(param.group(2).strip())
 
             return tool, args
 
@@ -397,5 +412,38 @@ class SWEBenchAgent:
                 args = {}
 
             return match.group(1), args
+
+        code_match = re.search(
+            r"```(?:python)?\s*(.*?)```", llm_output, re.DOTALL | re.IGNORECASE
+        )
+
+        code = (
+            code_match.group(1).strip() if code_match else llm_output.strip()
+        )
+
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            tree = None
+
+        if tree is not None:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(
+                   node.func, ast.Name):
+                    args = {}
+                    valid = True
+
+                    for kw in node.keywords:
+                        if kw.arg is None:
+                            valid = False
+                            break
+                        try:
+                            args[kw.arg] = ast.literal_eval(kw.value)
+                        except (ValueError, TypeError):
+                            valid = False
+                            break
+
+                    if valid:
+                        return node.func.id, args
 
         return None, {}
