@@ -135,31 +135,33 @@ class Sandbox:
 
         self._write_code_to_container(code, "/sandbox/code.py")
 
-        size_result = self.container.exec_run(
-            "stat -c%s /sandbox/code.py"
-        )
-        file_size = int(size_result.output.decode("utf-8").strip())
-        max_size = self.config.max_memory_mb * 1024 * 1024
-
-        if file_size > max_size:
-            return (
-                f"Code file is too large "
-                f"({file_size / (1024 * 1024):.2f} MB). "
-                f"Maximum allowed size is "
-                f"{self.config.max_memory_mb} MB.",
-                False,
-            )
-
         timeout = self.config.max_execution_time_seconds
+        memory_kb = self.config.max_memory_mb * 1024
+
         res = self.container.exec_run(
-            f"bash -lc 'timeout {timeout}s python3 /sandbox/code.py'"
+            "bash",
+            [
+                "-lc",
+                (
+                    f"ulimit -v {memory_kb}; "
+                    f"timeout {timeout}s python3 /sandbox/code.py"
+                ),
+            ],
         )
+
         output = res.output.decode("utf-8", errors="replace")
 
         if res.exit_code == 124:
             return (
                 f"{output}"
                 f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
+                False,
+            )
+
+        if res.exit_code == 137 or "MemoryError" in output:
+            return (
+                "[MEMORY LIMIT EXCEEDED]\n"
+                f"Execution exceeded {self.config.max_memory_mb} MB.",
                 False,
             )
 

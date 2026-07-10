@@ -20,7 +20,7 @@ def main() -> None:
         "--model-name", default="gemini-2.5-flash-lite"
     )
     parser.add_argument(
-        "--provider-url", default="https://generativelanguage.googleapis.com"
+        "--provider-url", default=None
     )
     args = parser.parse_args()
     task: SWEBenchTaskInput = SWEBenchTaskInput.from_file(

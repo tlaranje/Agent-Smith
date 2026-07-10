@@ -28,7 +28,7 @@ def _load_keys(prefix: str) -> list[str]:
 
 def get_llms(
     priority_model_name: str,
-    priority_provider_url: str
+    priority_provider_url: str | None
 ) -> dict[str, list]:
     from .gemini import GeminiAPI
     from .groq import GroqAPI
@@ -106,7 +106,10 @@ def get_llms(
         cls(
             api_key=key,
             model_name=priority_model_name,
-            api_url=priority_provider_url,
+            **(
+                {"api_url": priority_provider_url}
+                if priority_provider_url else {}
+            )
         )
         for key in keys
     ]
