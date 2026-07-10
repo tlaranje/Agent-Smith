@@ -1,6 +1,6 @@
 from typing import Any, cast
 from cerebras.cloud.sdk import Cerebras
-from cerebras.cloud.sdk.types.chat.chat_completion_response import (
+from cerebras.cloud.sdk.types.chat.chat_completion import (
     ChatCompletionResponse,
 )
 
@@ -43,7 +43,7 @@ class CerebrasAPI:
 
         return LLMResponse(
             content=chat_completion.choices[0].message.content,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            input_tokens=input_tokens if input_tokens is not None else 0,
+            output_tokens=output_tokens if output_tokens is not None else 0,
             model_name=self.model_name,
         )
