@@ -20,7 +20,7 @@ dependencies = [
     "mcp",
     "fastmcp>=3.4.2",
     "mistralai",
-    "cerebras"
+	  "cerebras"
 ]
 
 [dependency-groups]

@@ -27,7 +27,8 @@ def _load_keys(prefix: str) -> list[str]:
 
 
 def get_llms(
-    priority_model_name: str, priority_provider_url: str
+    priority_model_name: str,
+    priority_provider_url: str | None
 ) -> dict[str, list]:
     from .gemini import GeminiAPI
     from .groq import GroqAPI
@@ -37,30 +38,81 @@ def get_llms(
     from .cerebras import CerebrasAPI
 
     provider_map = {
-        "gemini": (GeminiAPI, "GEMINI_API_KEY", ["gemini-"]),
-        "groq": (GroqAPI, "GROQ_API_KEY", ["llama-", "llama3-", "mixtral-"]),
-        "openrouter": (OpenRouterAPI, "OPENROUTER_API_KEY", [
-                "meta-llama/", "google/", "anthropic/", "mistralai/"
-        ]),
-        "cohere": (CohereAPI, "COHERE_API_KEY", ["command"]),
-        "mistral": (MistralAPI, "MISTRAL_API_KEY", ["mistral-"]),
-        "cerebras": (CerebrasAPI, "CEREBRAS_API_KEY", [
-            "gpt-oss-120b", "gpt-oss-20b", "llama3.1-8b", "zai-glm-4.7",
-            "qwen-3-235b-a22b-instruct-2507",
-        ]),
+        "gemini": (
+            GeminiAPI,
+            "GEMINI_API_KEY",
+            [
+                "gemini/",
+                "gemini-"
+            ],
+        ),
+        "groq": (
+            GroqAPI,
+            "GROQ_API_KEY",
+            [
+                "groq/",
+                "llama-",
+                "llama3-",
+                "mixtral-",
+            ],
+        ),
+        "openrouter": (
+            OpenRouterAPI,
+            "OPENROUTER_API_KEY",
+            [
+                "openrouter/",
+                "meta-llama/",
+                "google/",
+                "anthropic/",
+                "mistralai/",
+            ],
+        ),
+        "cohere": (
+            CohereAPI,
+            "COHERE_API_KEY",
+            [
+                "cohere/",
+                "command",
+            ],
+        ),
+        "mistral": (
+            MistralAPI,
+            "MISTRAL_API_KEY",
+            [
+                "mistral/",
+                "mistral-",
+            ],
+        ),
+        "cerebras": (
+            CerebrasAPI,
+            "CEREBRAS_API_KEY",
+            [
+                "cerebras/",
+                "gpt-oss-",
+                "gemma-4-",
+                "zai-glm-",
+            ],
+        ),
     }
 
     def find_provider(model_name: str) -> str:
         model = model_name.lower()
 
+        best_provider = None
+        best_prefix_len = -1
+
         for provider, (_, _, prefixes) in provider_map.items():
             for prefix in prefixes:
-                if model.startswith(prefix):
-                    return provider
+                if model.startswith(prefix) and len(prefix) > best_prefix_len:
+                    best_provider = provider
+                    best_prefix_len = len(prefix)
 
-        raise ValueError(
-            f"Could not determine provider for model '{model_name}'."
-        )
+        if best_provider is None:
+            raise ValueError(
+                f"Could not determine provider for model '{model_name}'."
+            )
+
+        return best_provider
 
     priority_provider = find_provider(priority_model_name)
 
@@ -79,7 +131,10 @@ def get_llms(
         cls(
             api_key=key,
             model_name=priority_model_name,
-            api_url=priority_provider_url,
+            **(
+                {"api_url": priority_provider_url}
+                if priority_provider_url else {}
+            )
         )
         for key in keys
     ]

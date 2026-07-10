@@ -1,6 +1,8 @@
-from typing import Any
-
+from typing import Any, cast
 from cerebras.cloud.sdk import Cerebras
+from cerebras.cloud.sdk.types.chat.chat_completion import (
+    ChatCompletionResponse,
+)
 
 
 class CerebrasAPI:
@@ -21,38 +23,27 @@ class CerebrasAPI:
 
     def generate_messages(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[dict[str, str]],
     ) -> Any:
         from . import LLMResponse
 
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=messages,
-            max_completion_tokens=512
+        chat_completion = cast(
+            ChatCompletionResponse,
+            self.client.chat.completions.create(
+                model=self.model_name,
+                messages=cast(list[dict[str, object]], messages),
+                stream=False,
+            )
         )
 
-        usage = getattr(response, "usage", None)
+        usage = chat_completion.usage
 
-        input_tokens = (
-            int(getattr(usage, "prompt_tokens", 0))
-            if usage is not None
-            else 0
-        )
-
-        output_tokens = (
-            int(getattr(usage, "completion_tokens", 0))
-            if usage is not None
-            else 0
-        )
-
-        content = ""
-        if getattr(response, "choices", None):
-            message = response.choices[0].message
-            content = message.content or ""
+        input_tokens = usage.prompt_tokens if usage is not None else 0
+        output_tokens = usage.completion_tokens if usage is not None else 0
 
         return LLMResponse(
-            content=content,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            content=chat_completion.choices[0].message.content,
+            input_tokens=input_tokens if input_tokens is not None else 0,
+            output_tokens=output_tokens if output_tokens is not None else 0,
             model_name=self.model_name,
         )
