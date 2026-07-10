@@ -218,11 +218,11 @@ class SWEBenchAgent:
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
-                    except Exception as e:
+                    except Exception:
                         retries += 1
                         print(
                             "[Warning] Error occurred"
-                            f" with {self.llm.model_name}: {e}",
+                            f" with {self.llm.model_name}",
                             file=sys.stderr,
                         )
                         self.chose_llm()

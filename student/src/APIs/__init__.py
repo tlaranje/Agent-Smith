@@ -35,17 +35,22 @@ def get_llms(
     from .open_router import OpenRouterAPI
     from .cohere import CohereAPI
     from .mistral import MistralAPI
+    from .cerebras import CerebrasAPI
 
     provider_map = {
         "gemini": (
             GeminiAPI,
             "GEMINI_API_KEY",
-            ["gemini-"],
+            [
+                "gemini/",
+                "gemini-"
+            ],
         ),
         "groq": (
             GroqAPI,
             "GROQ_API_KEY",
             [
+                "groq/",
                 "llama-",
                 "llama3-",
                 "mixtral-",
@@ -55,6 +60,7 @@ def get_llms(
             OpenRouterAPI,
             "OPENROUTER_API_KEY",
             [
+                "openrouter/",
                 "meta-llama/",
                 "google/",
                 "anthropic/",
@@ -65,6 +71,7 @@ def get_llms(
             CohereAPI,
             "COHERE_API_KEY",
             [
+                "cohere/",
                 "command",
             ],
         ),
@@ -72,7 +79,18 @@ def get_llms(
             MistralAPI,
             "MISTRAL_API_KEY",
             [
+                "mistral/",
                 "mistral-",
+            ],
+        ),
+        "cerebras": (
+            CerebrasAPI,
+            "CEREBRAS_API_KEY",
+            [
+                "cerebras/",
+                "gpt-oss-",
+                "gemma-4-",
+                "zai-glm-",
             ],
         ),
     }
@@ -80,14 +98,21 @@ def get_llms(
     def find_provider(model_name: str) -> str:
         model = model_name.lower()
 
+        best_provider = None
+        best_prefix_len = -1
+
         for provider, (_, _, prefixes) in provider_map.items():
             for prefix in prefixes:
-                if model.startswith(prefix):
-                    return provider
+                if model.startswith(prefix) and len(prefix) > best_prefix_len:
+                    best_provider = provider
+                    best_prefix_len = len(prefix)
 
-        raise ValueError(
-            f"Could not determine provider for model '{model_name}'."
-        )
+        if best_provider is None:
+            raise ValueError(
+                f"Could not determine provider for model '{model_name}'."
+            )
+
+        return best_provider
 
     priority_provider = find_provider(priority_model_name)
 
