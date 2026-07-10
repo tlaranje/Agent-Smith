@@ -27,54 +27,27 @@ def _load_keys(prefix: str) -> list[str]:
 
 
 def get_llms(
-    priority_model_name: str,
-    priority_provider_url: str
+    priority_model_name: str, priority_provider_url: str
 ) -> dict[str, list]:
     from .gemini import GeminiAPI
     from .groq import GroqAPI
     from .open_router import OpenRouterAPI
     from .cohere import CohereAPI
     from .mistral import MistralAPI
+    from .cerebras import CerebrasAPI
 
     provider_map = {
-        "gemini": (
-            GeminiAPI,
-            "GEMINI_API_KEY",
-            ["gemini-"],
-        ),
-        "groq": (
-            GroqAPI,
-            "GROQ_API_KEY",
-            [
-                "llama-",
-                "llama3-",
-                "mixtral-",
-            ],
-        ),
-        "openrouter": (
-            OpenRouterAPI,
-            "OPENROUTER_API_KEY",
-            [
-                "meta-llama/",
-                "google/",
-                "anthropic/",
-                "mistralai/",
-            ],
-        ),
-        "cohere": (
-            CohereAPI,
-            "COHERE_API_KEY",
-            [
-                "command",
-            ],
-        ),
-        "mistral": (
-            MistralAPI,
-            "MISTRAL_API_KEY",
-            [
-                "mistral-",
-            ],
-        ),
+        "gemini": (GeminiAPI, "GEMINI_API_KEY", ["gemini-"]),
+        "groq": (GroqAPI, "GROQ_API_KEY", ["llama-", "llama3-", "mixtral-"]),
+        "openrouter": (OpenRouterAPI, "OPENROUTER_API_KEY", [
+                "meta-llama/", "google/", "anthropic/", "mistralai/"
+        ]),
+        "cohere": (CohereAPI, "COHERE_API_KEY", ["command"]),
+        "mistral": (MistralAPI, "MISTRAL_API_KEY", ["mistral-"]),
+        "cerebras": (CerebrasAPI, "CEREBRAS_API_KEY", [
+            "gpt-oss-120b", "gpt-oss-20b", "llama3.1-8b", "zai-glm-4.7",
+            "qwen-3-235b-a22b-instruct-2507",
+        ]),
     }
 
     def find_provider(model_name: str) -> str:

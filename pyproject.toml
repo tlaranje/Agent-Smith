@@ -19,7 +19,8 @@ dependencies = [
     "openai",
     "mcp",
     "fastmcp>=3.4.2",
-    "mistralai"
+    "mistralai",
+    "cerebras"
 ]
 
 [dependency-groups]

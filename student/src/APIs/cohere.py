@@ -18,9 +18,7 @@ ChatMessage: TypeAlias = (
 
 class CohereAPI:
     def __init__(
-        self,
-        api_key: str,
-        model_name: str = "command-a-plus-05-2026",
+        self, api_key: str, model_name: str = "command-a-plus-05-2026",
         api_url: str = "https://api.cohere.com"
     ) -> None:
         self.api_key = api_key
