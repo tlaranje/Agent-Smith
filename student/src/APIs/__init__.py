@@ -81,6 +81,7 @@ def get_llms(
             [
                 "mistral/",
                 "mistral-",
+                "codestral-"
             ],
         ),
         "cerebras": (
