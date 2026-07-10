@@ -6,292 +6,38 @@ from datetime import datetime
 import json
 import time
 import re
+import ast
 import sys
 
-SYSTEM_PROMPT: str = """
-You are an expert software engineer tasked with fixing bugs in real
-open-source repositories.
+SYSTEM_PROMPT = """
+You are an expert software engineer fixing bugs in existing Python
+projects.
 
-You operate in a loop. Each iteration you must output exactly ONE
-tool call as valid JSON and nothing else.
+The repository is already available at /testbed.
 
-The repository is available at /testbed.
+The available sandbox tools are documented below.
 
-## Available Tools
-
-All tool calls must use this exact format:
-
-{
-"tool": "<tool_name>",
-"args": {
-...
-}
-}
-
----
-
-### read_file
-
-Read a file with line numbers.
-
-Arguments:
-
-{
-"tool": "read_file",
-"args": {
-"filepath": "/testbed/path/to/file.py",
-"start_line": 1,
-"end_line": 100
-}
-}
-
-Expected output format:
-
-1: first line
-2: second line
-3: third line
-
-Use this tool whenever you need to inspect code.
-
----
-
-### edit_file
-
-Replace an exact string in a file.
-
-Arguments:
-
-{
-"tool": "edit_file",
-"args": {
-"filepath": "/testbed/path/to/file.py",
-"old_str": "...",
-"new_str": "..."
-}
-}
+Use the tools as normal Python functions.
 
 Requirements:
 
-* old_str must match the file contents exactly.
-* Preserve indentation and formatting.
-* Make the smallest possible change.
-
----
-
-### list_files
-
-List files matching a pattern.
-
-Arguments:
-
-{
-"tool": "list_files",
-"args": {
-"directory": "/testbed",
-"pattern": "*.py"
-}
-}
-
-Use this tool to explore repository structure.
-
----
-
-### search_code
-
-Search code using a grep-like search.
-
-Arguments:
-
-{
-"tool": "search_code",
-"args": {
-"pattern": "flatten",
-"file_pattern": "*.py"
-}
-}
-
-Expected output format:
-
-/absolute/path/file.py:123 def flatten(...)
-/absolute/path/other.py:55 flatten(expr)
-
-Use this tool when the relevant symbol is unknown.
-
----
-
-### search_function_or_class_definition_in_code
-
-Locate a function or class definition.
-
-Arguments:
-
-{
-"tool": "search_function_or_class_definition_in_code",
-"args": {
-"name": "flatten"
-}
-}
-
-Expected output format:
-
-/absolute/path/file.py:123 def flatten(...)
-
-Use this tool before broad searches whenever a function or class name is known.
-
----
-
-### find_references
-
-Find usages of a symbol.
-
-Arguments:
-
-{
-"tool": "find_references",
-"args": {
-"name": "flatten"
-}
-}
-
-Optional disambiguation:
-
-{
-"tool": "find_references",
-"args": {
-"name": "flatten",
-"filepath": "/testbed/module.py",
-"line": 123
-}
-}
-
-Expected output format:
-
-/absolute/path/file.py:45 flatten(...)
-/absolute/path/other.py:90 result = flatten(...)
-
-Use this tool to understand call sites and impact before editing.
-
----
-
-### run_command
-
-Run a shell command.
-
-Arguments:
-
-{
-"tool": "run_command",
-"args": {
-"command": "python -m pytest tests/test_example.py",
-"workdir": "/testbed"
-}
-}
-
-Returns:
-
-* stdout
-* stderr
-* exit code
-
-Use this for targeted investigation and debugging.
-
----
-
-### run_tests
-
-Run the evaluation test suite.
-
-Arguments:
-
-{
-"tool": "run_tests",
-"args": {}
-}
-
-Use after implementing a fix.
-
----
-
-### get_patch
-
-Retrieve the complete unified git diff.
-
-Arguments:
-
-{
-"tool": "get_patch",
-"args": {}
-}
-
-Use this to inspect the final set of modifications
-before submission if necessary.
-
----
-
-### final_answer
-
-Submit the completed solution.
-
-Arguments:
-
-{
-"tool": "final_answer",
-"args": {}
-}
-
-Call this only when you are confident the bug is fixed.
-
-## Recommended Workflow
-
-1. Understand the issue.
-2. Locate relevant code.
-3. Read the implementation.
-4. Understand root cause.
-5. Make the minimal fix.
-6. Verify with tests.
-7. Inspect patch if needed.
-8. Submit.
-
-## Investigation Strategy
-
-If a symbol name is known:
-
-1. search_function_or_class_definition_in_code
-2. find_references
-3. read_file
-
-If the symbol is unknown:
-
-1. search_code
-2. list_files
-3. read_file
-
-Avoid reading large files unnecessarily.
-
-## Editing Principles
-
-* Fix the root cause.
-* Prefer minimal changes.
-* Do not refactor unrelated code.
-* Do not modify tests unless explicitly required.
-* Do not introduce speculative changes.
-
-## Rules
-
-* Output exactly ONE tool call per response.
-* Output valid JSON only.
-* Never explain your reasoning.
-* Never output markdown.
-* Never output multiple tool calls.
-* Always gather sufficient context before editing.
-* Use search_function_or_class_definition_in_code and find_references
-whenever possible.
-* Use run_tests to verify fixes.
-* Use get_patch if you need to review changes.
-* Finish by calling final_answer.
-
-Your objective is to produce a correct minimal patch that
-fixes the reported issue.
+- Understand the reported issue before editing code.
+- Gather enough context before making changes.
+- Make the smallest correct fix.
+- Preserve the existing code style.
+- Do not modify unrelated code.
+- Run tests before finishing whenever appropriate.
+- When the fix is complete, call final_answer().
+- If edit_file fails because old_str was not found, do not guess
+  again or move on to something else: call read_file on the exact
+  region first to see the precise text (including indentation, line
+  breaks, and surrounding characters), then retry edit_file with an
+  old_str copied verbatim from that output.
+- old_str must match a single contiguous snippet of the file exactly,
+  character for character. Never split it across a comma, a paren, or
+  a line break that isn't actually in the source.
+- Return only one tool invocation at a time.
+- Do not explain your reasoning.
 """
 
 
@@ -302,8 +48,7 @@ class StepMetrics(BaseModel):
     cycle.
     All fields are required for evaluation, empty strings are
     acceptable
-    for steps where a field doesn't apply (e.g., no sandbox execution
-    ).
+    for steps where a field doesn't apply (e.g., no sandbox execution).
     """
     step: int = Field(
         ..., description="1-indexed iteration number"
@@ -357,12 +102,6 @@ class StepMetrics(BaseModel):
 
 
 class SolutionOutput(BaseModel):
-    """Output from student solution, required format for evaluation.
-    This is the JSON structure your agent must produce and write to
-    solution.json.
-    The moulinette validates this against task correctness and
-    metrics limits.
-    """
     task_id: str = Field(
         ...,
         description=(
@@ -419,6 +158,17 @@ class SolutionOutput(BaseModel):
     )
 
 
+def _coerce(value: str) -> Any:
+    """Try to interpret a raw XML-captured string as a Python/JSON
+    literal (int, float, bool, list, dict...) before falling back to
+    the original string. Only the <invoke> XML format needs this --
+    the JSON/ReAct formats already get correct types from json.loads."""
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return value
+
+
 class SWEBenchAgent:
     def __init__(self, llms: dict[str, list], sandbox: Sandbox,
                  max_iterations: int = 10) -> None:
@@ -446,12 +196,14 @@ class SWEBenchAgent:
         self.sandbox.eval_script = task.eval_script
         self.sandbox.start()
         assert self.sandbox.mcp_client is not None
-        tools = self.sandbox.mcp_client.list_tools()
+        manual = self.sandbox.mcp_client.generate_manual()
+
+        prompt = self.build_initial_prompt(task, manual)
 
         messages = [
             {
                 "role": "user",
-                "content": self.build_initial_prompt(task, tools),
+                "content": prompt,
             }
         ]
 
@@ -466,11 +218,11 @@ class SWEBenchAgent:
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
-                    except Exception:
+                    except Exception as e:
                         retries += 1
                         print(
                             "[Warning] Error occurred"
-                            f" with {self.llm.model_name}",
+                            f" with {self.llm.model_name}: {e}",
                             file=sys.stderr,
                         )
                         self.chose_llm()
@@ -484,7 +236,9 @@ class SWEBenchAgent:
                 total_input_tokens += response.input_tokens
                 total_output_tokens += response.output_tokens
 
-                llm_output = response.content
+                llm_output = response.content or (
+                    "(empty response from the model)"
+                )
 
                 tool_name, tool_args = self.extract_tool_call(llm_output)
 
@@ -509,7 +263,7 @@ class SWEBenchAgent:
                         benchmark="swebench",
                         success=bool(patch.strip()),
                         solution=patch,
-                        system_prompt=SYSTEM_PROMPT,
+                        system_prompt=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -548,7 +302,7 @@ class SWEBenchAgent:
             benchmark="swebench",
             success=False,
             solution=patch,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=prompt,
             iterations=self.max_iterations,
             total_requests=total_requests,
             total_input_tokens=total_input_tokens,
@@ -559,60 +313,137 @@ class SWEBenchAgent:
         )
 
     @staticmethod
-    def extract_tool_call(llm_output: str) -> tuple[str | None, dict]:
-        """
-        Extract tool name and args from LLM output.
-        Expects a JSON block in the format:
-        ```
-            {
-                "tool": "tool_name",
-                "args": { ... }
-            }
-        ```
-        """
-        pattern = r"```json\s*([\s\S]*?)\s*```"
-        match = re.search(pattern, llm_output)
+    def build_initial_prompt(task: SWEBenchTaskInput, manual: str) -> str:
+        return (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"{manual}\n\n"
+            "## Task\n"
+            f"Repository: {task.repo}\n"
+            f"Instance: {task.instance_id}\n\n"
+            "Problem Statement:\n"
+            f"{task.problem_statement}\n\n"
+            "Use the available tools to inspect the repository, "
+            "understand the issue, and implement the fix.\n"
+            "When the issue is resolved, call final_answer()."
+        )
+
+    @staticmethod
+    def extract_tool_call(llm_output: str | None, ) -> tuple[str | None, dict]:
+        if not llm_output:
+            return None, {}
+
+        match = re.search(
+            r"```json\s*(.*?)```", llm_output, re.DOTALL | re.IGNORECASE
+        )
+
+        raw = None
 
         if match:
             raw = match.group(1)
         else:
-            pattern = r"\{[\s\S]*\}"
-            match = re.search(pattern, llm_output)
-            if not match:
-                return None, {}
-            raw = match.group(0)
+            match = re.search(r"\{[\s\S]*\}", llm_output)
+            if match:
+                raw = match.group(0)
+
+        if raw is not None:
+            try:
+                obj = json.loads(raw)
+
+                if "tool" in obj:
+                    args = obj.get("args", {})
+                    if not isinstance(args, dict):
+                        return None, {}
+                    return obj["tool"], args
+
+                if "name" in obj:
+                    args = obj.get("arguments", {})
+                    if not isinstance(args, dict):
+                        return None, {}
+                    return obj["name"], args
+
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        match = re.search(
+            r"<invoke\s+name=\"([^\"]+)\">(.*?)</invoke>",
+            llm_output, re.DOTALL
+        )
+
+        if match:
+            tool = match.group(1)
+            args = {}
+
+            for param in re.finditer(
+                (r"<parameter\s+name=\"([^\"]+)\">"r"(.*?)</parameter>"),
+                match.group(2), re.DOTALL,
+            ):
+                args[param.group(1)] = _coerce(param.group(2).strip())
+
+            return tool, args
+
+        match = re.search(
+            r"<tool_call>\s*(\{.*?\})\s*</tool_call>", llm_output, re.DOTALL
+        )
+
+        if match:
+            try:
+                obj = json.loads(match.group(1))
+                args = obj.get("arguments", {})
+
+                if not isinstance(args, dict):
+                    return None, {}
+
+                return obj["name"], args
+
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        match = re.search(
+            (r"Action:\s*(\w+)\s*"r"Action Input:\s*(\{.*?\})"),
+            llm_output, re.DOTALL
+        )
+
+        if match:
+            try:
+                args = json.loads(match.group(2))
+                if not isinstance(args, dict):
+                    return None, {}
+            except json.JSONDecodeError:
+                args = {}
+
+            return match.group(1), args
+
+        code_match = re.search(
+            r"```(?:python)?\s*(.*?)```", llm_output, re.DOTALL | re.IGNORECASE
+        )
+
+        code = (
+            code_match.group(1).strip() if code_match else llm_output.strip()
+        )
 
         try:
-            parsed = json.loads(raw)
-            tool_name = parsed.get("tool")
-            tool_args = parsed.get("args", {})
+            tree = ast.parse(code)
+        except SyntaxError:
+            tree = None
 
-            if not isinstance(tool_name, str) or not tool_name:
-                return None, {}
-            if not isinstance(tool_args, dict):
-                return None, {}
+        if tree is not None:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(
+                   node.func, ast.Name):
+                    args = {}
+                    valid = True
 
-            return tool_name, tool_args
+                    for kw in node.keywords:
+                        if kw.arg is None:
+                            valid = False
+                            break
+                        try:
+                            args[kw.arg] = ast.literal_eval(kw.value)
+                        except (ValueError, TypeError):
+                            valid = False
+                            break
 
-        except json.JSONDecodeError:
-            return None, {}
+                    if valid:
+                        return node.func.id, args
 
-    @staticmethod
-    def build_initial_prompt(
-        task: SWEBenchTaskInput,
-        tools: Any
-    ) -> str:
-        tool_section = "## Available Tools\n\n"
-
-        for tool in tools:
-            tool_section += f"- {tool.name}\n"
-
-        prompt = SYSTEM_PROMPT
-        prompt += tool_section
-
-        prompt += "\n## Task\n"
-        prompt += f"Repository: {task.repo}\n"
-        prompt += f"Instance: {task.instance_id}\n"
-        prompt += f"Problem Statement:\n{task.problem_statement}\n"
-
-        return prompt
+        return None, {}

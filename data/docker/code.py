@@ -4,37 +4,33 @@ def final_answer(answer_string):
     with open('/tmp/agent/final_result.py', 'w', encoding='utf-8') as _f:
         _f.write(answer_string)
 
-# Define the function to calculate the square of a number
-def square_number(num):
+def bitwise_xor(test_tup1, test_tup2):
     """
-    This function calculates the square of a given number.
+    Performs the mathematical bitwise xor operation across the given tuples.
 
     Args:
-        num (int or float): The input number.
+        test_tup1: The first tuple of integers.
+        test_tup2: The second tuple of integers.
 
     Returns:
-        int or float: The square of the input number.
+        A tuple containing the result of the bitwise XOR operation
+        element-wise.
     """
-    return num ** 2
+    result = []
+    for i in range(len(test_tup1)):
+        result.append(test_tup1[i] ^ test_tup2[i])
+    return tuple(result)
 
+final_answer(
+"""
+def bitwise_xor(test_tup1, test_tup2):
+    result = []
+    for i in range(len(test_tup1)):
+        result.append(test_tup1[i] ^ test_tup2[i])
+    return tuple(result)
+"""
+)
 
-# Test runner execution to verify the function
-def test_square_number():
-    # Test with positive integer
-    assert square_number(5) == 25
-    
-    # Test with negative integer
-    assert square_number(-3) == 9
-    
-    # Test with float
-    assert square_number(2.5) == 6.25
-    
-    # Test with zero
-    assert square_number(0) == 0
-
-
-# Run the tests
-test_square_number()
-
-# If tests pass, call this to finish the task
-final_answer("def square_number(num):\n    return num ** 2")
+# --- AUTOMATED TESTS ---
+assert bitwise_xor((11, 5, 7, 10), (6, 3, 4, 4)) == (13, 6, 3, 14)
+assert bitwise_xor((12, 6, 8, 11), (7, 4, 5, 6)) == (11, 2, 13, 13)

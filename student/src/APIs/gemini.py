@@ -1,6 +1,7 @@
+from google.genai.types import GenerateContentConfig
+from google.genai.types import HttpOptions
 from google import genai
 from typing import Any
-from google.genai.types import HttpOptions
 
 
 class GeminiAPI:
@@ -29,9 +30,19 @@ class GeminiAPI:
             for m in messages
         ]
 
+        try:
+            from google.genai.types import ThinkingConfig
+            config = GenerateContentConfig(
+                max_output_tokens=4096,
+                thinking_config=ThinkingConfig(thinking_budget=0),
+            )
+        except (ImportError, TypeError):
+            config = GenerateContentConfig(max_output_tokens=4096)
+
         response = self.client.models.generate_content(
             model=self.model_name,
             contents=contents,
+            config=config,
         )
 
         usage = response.usage_metadata
@@ -48,8 +59,15 @@ class GeminiAPI:
             else 0
         )
 
+        content = response.text
+        if not content:
+            finish_reason = None
+            if response.candidates:
+                finish_reason = response.candidates[0].finish_reason
+            content = f"(empty response, finish_reason={finish_reason})"
+
         return LLMResponse(
-            content=response.text,
+            content=content,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             model_name=self.model_name,

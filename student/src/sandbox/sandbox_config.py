@@ -3,11 +3,6 @@ import ast
 
 
 class SandboxConfig(BaseModel):
-    """
-    Sandbox configuration for student solutions.
-    Uses allowlist approach: only imports in authorized_imports are allowed.
-    Everything else is blocked by default.
-    """
     authorized_imports: list[str] = Field(default_factory=lambda: [
         "math", "math.*",
         "collections", "collections.*",
@@ -67,18 +62,44 @@ class SandboxConfig(BaseModel):
         except SyntaxError:
             return False
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name):
-                    if node.func.id == "open":
-                        args = node.args
+        def path_is_allowed(path: str) -> bool:
+            return any(
+                path.startswith(d) for d in self.allowed_directories
+            )
 
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+
+            if isinstance(node.func, ast.Name):
+                if node.func.id == "open":
+                    args = node.args
+                    if args and isinstance(args[0], ast.Constant):
+                        path = str(args[0].value)
+                        if not path_is_allowed(path):
+                            return False
+
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr == "open":
+                    target = node.func.value
+
+                    if (
+                        isinstance(target, ast.Call)
+                        and isinstance(target.func, ast.Name)
+                        and target.func.id in ("Path", "PosixPath")
+                    ):
+                        args = target.args
                         if args and isinstance(args[0], ast.Constant):
                             path = str(args[0].value)
-
-                            if not any(path.startswith(d)
-                               for d in self.allowed_directories):
+                            if not path_is_allowed(path):
                                 return False
+
+                    args = node.args
+                    if args and isinstance(args[0], ast.Constant):
+                        path = str(args[0].value)
+                        if not path_is_allowed(path):
+                            return False
+
         return True
 
     def validate_code(self, code: str = "") -> bool:

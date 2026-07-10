@@ -1,38 +1,31 @@
 from typing import Any, Optional, List
 from pydantic import BaseModel, Field
 from ..parser import MBPPTaskInput
+import xml.etree.ElementTree as ET
 from ..sandbox import Sandbox
 from datetime import datetime
+import json
 import time
-import re
 import sys
+import re
 
 SYSTEM_PROMPT = """
-You are a coding agent solving Python programming tasks.
+You are an expert Python programmer.
 
-You operate in a loop: each iteration you write Python code that gets
-executed inside a secure sandbox.
-You can see the stdout/stderr or exceptions of your code in the next
-iteration as observations.
+You solve one programming task at a time.
 
-## Objectives
-1. Read the task description and function signature.
-2. Write the implementation alongside a test runner execution if you
-want to verify it.
-3. Once your code passes the required test cases (or you verify it works),
-you MUST submit using:
-   final_answer("your complete clean function code here")
+Requirements:
 
-## Formatting Rules
-Always respond strictly with Python code wrapped inside a markdown code block:
-```python
-# You can write helper logic, run prints, or execute the required assert
-# statements here to test.
-def your_function():
-    ...
-
-# If tests pass, call this to finish the task:
-final_answer("def your_function():\\n    ...")
+- Produce correct Python code implementing the requested function.
+- Follow the requested function signature exactly.
+- Do not import unavailable modules.
+- Do not access resources outside the sandbox.
+- Return only executable Python code. Do not call any tools yourself
+  and do not include markdown or explanations -- your code will be
+  tested and submitted automatically.
+- Once you are confident your solution is correct, call
+  final_answer("your complete clean function code here") as the last
+  line of your code.
 """
 
 
@@ -69,6 +62,25 @@ class SolutionOutput(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
+def _coerce(value: str) -> Any:
+    """Try to interpret a raw XML-captured string as a Python/JSON
+    literal (int, float, bool, list, dict...) before falling back to
+    the original string. json.loads already distinguishes these
+    correctly for the JSON/ReAct formats, but the <invoke> XML format
+    is captured via plain regex, so this is only needed here."""
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return value
+
+
+# Tools that exist on the MBPP MCP server for the agent's own internal
+# use (setting up the task, running the harness) -- these are never
+# meant to be called by the LLM inside the code it writes, so they are
+# hidden from the manual shown in the prompt.
+_INTERNAL_ONLY_TOOLS = {"set_current_task_tests", "run_tests"}
+
+
 class MBPPAgent:
     def __init__(self, sandbox: Sandbox, llms: dict[str, list],
                  max_iterations: int = 10) -> None:
@@ -89,16 +101,31 @@ class MBPPAgent:
         self.llm = self.llms[self.current_llm_index]
 
     def solve(self, task: MBPPTaskInput) -> SolutionOutput:
-        assert self.sandbox.mcp_client is not None
-
         start_time = time.time()
         steps: list[StepMetrics] = []
         total_requests = 0
         total_input_tokens = 0
         total_output_tokens = 0
-        messages = [{"role": "user", "content": self.build_prompt(task)}]
 
         self.sandbox.start()
+        assert self.sandbox.mcp_client is not None
+
+        self.sandbox.mcp_client.call_tool(
+            "set_current_task_tests", test_list=task.test_list
+        )
+
+        manual = self.sandbox.mcp_client.generate_manual(
+            exclude=_INTERNAL_ONLY_TOOLS
+        )
+
+        prompt = self.build_prompt(task, manual)
+
+        messages = [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ]
 
         try:
             for iteration in range(self.max_iterations):
@@ -124,39 +151,22 @@ class MBPPAgent:
                             file=sys.stderr,
                         )
 
-                code = self.extract_code(response.content)
+                code = self.extract_code(response.content or "")
 
-                final_answer_shim = (
-                    "import os as _os\n"
-                    "def final_answer(answer_string):\n"
-                    "    _os.makedirs('/tmp/agent', exist_ok=True)\n"
-                    "    with open('/tmp/agent/final_result.py', 'w', "
-                    "encoding='utf-8') as _f:\n"
-                    "        _f.write(answer_string)\n\n"
+                # Every code path -- including final_answer -- is
+                # executed inside the sandboxed container via the
+                # run_tests MCP tool. Sandbox.execute() already injects
+                # the final_answer shim and checks
+                # /tmp/agent/final_result.py there, so nothing is ever
+                # exec()'d in this process, and the code logged below is
+                # exactly what ran.
+                sandbox_output = self.sandbox.mcp_client.call_tool(
+                    "run_tests", code=code
+                )
+                done = (
+                    "SUCCESS: All tests passed successfully!" in sandbox_output
                 )
 
-                if "final_answer(" in code:
-                    import io
-                    import contextlib
-                    stdout_capture = io.StringIO()
-                    try:
-                        namespace = self.sandbox.build_namespace()
-                        with contextlib.redirect_stdout(stdout_capture), \
-                                contextlib.redirect_stderr(stdout_capture):
-                            exec(code, namespace, namespace)
-                        done = True
-                        sandbox_output = "Task completed using final_answer."
-                    except Exception as e:
-                        done = False
-                        sandbox_output = f"Error executing final_answer: {e}"
-                else:
-                    sandbox_output = self.sandbox.mcp_client.call_tool(
-                        "run_tests", code=code
-                    )
-                    done = (
-                        "SUCCESS: All tests passed successfully!"
-                        in sandbox_output
-                    )
                 steps.append(StepMetrics(
                     step=iteration + 1,
                     input_tokens=response.input_tokens,
@@ -165,7 +175,7 @@ class MBPPAgent:
                     api_url=self.llm.api_url,
                     model_name=self.llm.model_name,
                     llm_output=response.content,
-                    sandbox_input=final_answer_shim + code,
+                    sandbox_input=code,
                     sandbox_output=sandbox_output,
                     retries=retries,
                 ))
@@ -176,8 +186,8 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        solution=final_answer_shim + code,
-                        system_prompt=SYSTEM_PROMPT,
+                        solution=code,
+                        system_prompt=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -185,8 +195,12 @@ class MBPPAgent:
                         total_time_seconds=time.time() - start_time,
                         steps=steps,
                     )
-                messages.append(
-                    {"role": "assistant", "content": response.content})
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content or (
+                        "(empty response from the model)"
+                    ),
+                })
                 messages.append({
                     "role": "user",
                     "content": self._format_observation(
@@ -201,7 +215,7 @@ class MBPPAgent:
             benchmark="mbpp",
             success=False,
             solution="",
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=prompt,
             iterations=self.max_iterations,
             total_requests=total_requests,
             total_input_tokens=total_input_tokens,
@@ -222,26 +236,90 @@ class MBPPAgent:
         )
 
     @staticmethod
-    def build_prompt(task: MBPPTaskInput) -> str:
-        """Initial message — includes system prompt + task description."""
+    def build_prompt(task: MBPPTaskInput, manual: str) -> str:
         task_data = task.model_dump()
+
         lines = [
             SYSTEM_PROMPT,
-            "\n## Task",
+            "",
+            manual,
+            "",
+            "## Task",
             f"Description: {task_data['task_definition']}",
-            f"Function signature: {task_data['function_definition']}",
+            (
+                "Function signature: "
+                f"{task_data['function_definition']}"
+            ),
             "Tests to pass:",
-            *[f"  {t}" for t in task_data['test_list']],
-            "\nWrite your solution:",
+            *[f"  {t}" for t in task_data["test_list"]],
+            "",
+            "Write your solution:",
         ]
+
         return "\n".join(lines)
 
     @staticmethod
     def extract_code(text: str) -> str:
-        pattern = r"```[\w+]*\n([\s\S]*?)\n```"
-        match = re.findall(pattern, text)
-
+        match = re.search(
+            r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE
+        )
         if match:
-            return "\n".join(match).strip()
+            return match.group(1).strip()
+
+        match = re.search(
+            r"<invoke\s+name=\"([^\"]+)\">(.*?)</invoke>", text, re.DOTALL
+        )
+        if match:
+            tool = match.group(1)
+            body = match.group(2)
+            args = {}
+
+            for param in re.finditer(
+                r"<parameter\s+name=\"([^\"]+)\">(.*?)</parameter>",
+                body, re.DOTALL
+            ):
+                args[param.group(1)] = _coerce(param.group(2).strip())
+
+            params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            return f"result = {tool}({params})"
+
+        match = re.search(
+            r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL,
+        )
+        if match:
+            try:
+                obj = json.loads(match.group(1))
+                tool = obj["name"]
+                args = obj.get("arguments", {})
+                params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+                return f"result = {tool}({params})"
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        match = re.search(
+            r"Action:\s*(\w+)\s*"r"Action Input:\s*(\{.*?\})", text, re.DOTALL,
+        )
+        if match:
+            tool = match.group(1)
+            try:
+                args = json.loads(match.group(2))
+            except json.JSONDecodeError:
+                args = {}
+
+            params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            return f"result = {tool}({params})"
+
+        try:
+            root = ET.fromstring(text)
+            if root.tag == "invoke":
+                tool = root.attrib["name"]
+                args = {
+                    child.attrib["name"]: _coerce((child.text or "").strip())
+                    for child in root.findall("parameter")
+                }
+                params = ", ".join(f"{k}={v!r}" for k, v in args.items())
+                return f"result = {tool}({params})"
+        except ET.ParseError:
+            pass
 
         return text.strip()
