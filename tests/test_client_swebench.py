@@ -10,6 +10,14 @@ import docker
 
 
 async def main():
+    """
+    Smoke-test the MCP HTTP server for SWE-bench-style tools:
+    start a container, initialize a session, then exercise
+    run_command, read_file, edit_file, and get_patch in sequence.
+
+    Raises:
+        docker.errors.APIError: If the container fails to start.
+    """
     client = docker.from_env()
     container = client.containers.run(
         "swe_sandbox:latest",
@@ -19,11 +27,15 @@ async def main():
     )
 
     try:
+        # Initialize an empty git repo in /testbed so get_patch has
+        # something valid to diff against later.
         setup = container.exec_run(
             ["bash", "-c", "mkdir -p /testbed && cd /testbed && git init"]
         )
         print("setup /testbed:", setup.output.decode("utf-8", "replace"))
 
+        # Register the container and task with the MCP server
+        # before opening a tool session.
         async with httpx.AsyncClient() as http:
             resp = await http.post(
                 "http://localhost:8000/initialize",
@@ -48,6 +60,8 @@ async def main():
                     [t.name for t in tools.tools],
                 )
 
+                # Create a file, then read/edit it to exercise the
+                # core file-manipulation tools end to end.
                 result = await session.call_tool(
                     "run_command",
                     {
@@ -75,6 +89,7 @@ async def main():
                 )
                 print("edit_file:", result)
 
+                # Stage the change and confirm get_patch reflects it.
                 result = await session.call_tool(
                     "run_command",
                     {"command": "git add -A", "workdir": "/testbed"},

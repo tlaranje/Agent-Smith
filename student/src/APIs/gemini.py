@@ -17,6 +17,21 @@ class GeminiAPI:
         )
 
     def generate_messages(self, messages: list[dict]) -> Any:
+        """
+        Send messages to the Gemini API and wrap the result in
+        a common LLMResponse.
+
+        Args:
+            messages: Conversation history as a list of role/
+                content dicts. The "assistant" role is mapped to
+                Gemini's "model" role.
+
+        Returns:
+            An LLMResponse with the generated content and token
+            usage counts. If the model returns no text, content
+            is set to a placeholder string describing the finish
+            reason.
+        """
         from . import LLMResponse
 
         contents = [
@@ -27,6 +42,9 @@ class GeminiAPI:
             for m in messages
         ]
 
+        # Disable "thinking" tokens when supported by the installed
+        # SDK version, to keep responses fast and cheap; fall back
+        # to a plain config on older SDKs that lack ThinkingConfig.
         try:
             from google.genai.types import ThinkingConfig
             config = GenerateContentConfig(

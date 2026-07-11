@@ -1,6 +1,6 @@
-import json
 from pydantic import BaseModel, Field
 from typing import List
+import json
 
 
 class MBPPTaskInput(BaseModel):
@@ -13,12 +13,25 @@ class MBPPTaskInput(BaseModel):
 
     @classmethod
     def from_file(cls, path: str) -> "MBPPTaskInput":
+        """
+        Load a task from a JSON file.
+
+        Args:
+            path: Path to the JSON file describing the task.
+
+        Returns:
+            A populated MBPPTaskInput instance.
+
+        Raises:
+            FileNotFoundError: If path does not exist.
+        """
         with open(path, "r") as fd:
             return cls(**json.load(fd))
 
 
 class SWEBenchTaskInput(BaseModel):
-    """Input for a SWE-bench task, provided by the moulinette.
+    """
+    Input for a SWE-bench task, provided by the moulinette.
     Your agent receives this and must produce a git patch that fixes
     the issue.
     """
@@ -51,5 +64,17 @@ class SWEBenchTaskInput(BaseModel):
 
     @classmethod
     def from_file(cls, path: str) -> "SWEBenchTaskInput":
+        """
+        Load a task from a JSON file.
+
+        Args:
+            path: Path to the JSON file describing the task.
+
+        Returns:
+            A populated SWEBenchTaskInput instance.
+
+        Raises:
+            FileNotFoundError: If path does not exist.
+        """
         with open(path, "r") as fd:
             return cls(**json.load(fd))

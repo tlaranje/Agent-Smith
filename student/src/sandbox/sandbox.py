@@ -14,9 +14,7 @@ import os
 
 class Sandbox:
     def __init__(
-        self,
-        agent: str = "MBPP",
-        image: str = "agent_sandbox:latest",
+        self, agent: str = "MBPP", image: str = "agent_sandbox:latest",
         config: SandboxConfig | None = None,
     ) -> None:
         self.image = image
@@ -31,26 +29,31 @@ class Sandbox:
 
     @classmethod
     def attach(
-        cls,
-        agent: str,
-        container_id: str,
+        cls, agent: str, container_id: str,
         config: SandboxConfig | None = None,
         image: str = "agent_sandbox:latest",
     ) -> "Sandbox":
-        """Reconnect to an already-running container (used inside the
+        """
+        Reconnect to an already-running container (used inside the
         MCP tool server subprocess, which does not manage the
-        container's lifecycle itself)."""
+        container's lifecycle itself).
+        """
         instance = cls(agent=agent, image=image, config=config)
         instance.container = instance.client.containers.get(container_id)
         return instance
 
     def get_patch(self) -> str:
+        """Return the current git diff of /testbed as a string."""
         out, _ = self._exec(
             "cd /testbed && git -c core.fileMode=false diff"
         )
         return out
 
     def _final_answer(self, answer_string: str) -> None:
+        """
+        Persist the agent's final answer to a fixed path so it
+        can be retrieved after the sandboxed code finishes running.
+        """
         os.makedirs("/tmp/agent", exist_ok=True)
         with open(
             "/tmp/agent/final_result.py", "w", encoding="utf-8"
@@ -58,6 +61,11 @@ class Sandbox:
             f.write(answer_string)
 
     def _restricted_builtins(self) -> dict:
+        """
+        Build a minimal, safe subset of __builtins__ for use as
+        the namespace of sandboxed code (no I/O, no import, no
+        exec/eval-related builtins).
+        """
         import builtins
         safe_builtins = {}
         allowed = [
@@ -76,6 +84,11 @@ class Sandbox:
         return safe_builtins
 
     def build_namespace(self) -> dict:
+        """
+        Build the execution namespace exposed to sandboxed code:
+        restricted builtins, the MCP tools as callables, and
+        final_answer.
+        """
         if self.mcp_client is None:
             return {}
         namespace: dict[str, Any] = {
@@ -86,6 +99,11 @@ class Sandbox:
         return namespace
 
     def _write_code_to_container(self, code: str, path: str) -> None:
+        """
+        Write `code` into the running container at `path` by
+        streaming an in-memory tar archive (avoids touching the
+        host filesystem).
+        """
         directory = os.path.dirname(path)
         filename = os.path.basename(path)
 
@@ -100,8 +118,12 @@ class Sandbox:
         self.container.put_archive(directory, tarstream)
 
     def _write_file(self, filepath: str, content: str) -> None:
-        """Alias used by the SWE-bench tools (mkdir -p first, since the
-        target directory may not exist yet, e.g. /tmp/eval_script.sh)."""
+        """
+        Alias used by the SWE-bench tools (mkdir -p first, since the
+        target directory may not exist yet, e.g. /tmp/eval_script.sh).
+        """
+        if not filepath.startswith("/"):
+            filepath = f"/testbed/{filepath}"
         directory = os.path.dirname(filepath)
         self._exec(f"mkdir -p {directory}")
         self._write_code_to_container(content, filepath)
@@ -109,6 +131,22 @@ class Sandbox:
     def execute(
         self, code: str, test_list: list[str] | None = None
     ) -> tuple[str, bool]:
+        """
+        Validate, inject helpers into, and run a piece of code
+        inside the sandboxed container.
+
+        Args:
+            code: The Python source to run.
+            test_list: Optional test statements appended after the
+                code (used for MBPP-style tasks).
+
+        Returns:
+            A tuple of (output, success). output is either the
+            final_answer content on success, or the raw
+            stdout/stderr / an error message on failure. success is
+            True only if final_answer was called and the process
+            exited cleanly.
+        """
         if not self.config.validate_code(code):
             return (
                 "Code rejected: disallowed import, "
@@ -118,6 +156,9 @@ class Sandbox:
 
         self.container.exec_run("rm -f /tmp/agent/final_result.py")
 
+        # Inject a final_answer() shim so the LLM's generated code
+        # can "return" a result by writing to a known file, which we
+        # read back afterward.
         final_answer_shim = (
             "import os as _os\n"
             "def final_answer(answer_string):\n"
@@ -138,15 +179,13 @@ class Sandbox:
         timeout = self.config.max_execution_time_seconds
         memory_kb = self.config.max_memory_mb * 1024
 
+        # ulimit caps virtual memory; timeout caps wall-clock time,
+        # both enforced inside the container itself.
         res = self.container.exec_run(
-            "bash",
-            [
-                "-lc",
-                (
-                    f"ulimit -v {memory_kb}; "
-                    f"timeout {timeout}s python3 /sandbox/code.py"
-                ),
-            ],
+            cmd=["bash", "-lc", (
+                f"ulimit -v {memory_kb}; "
+                f"timeout {timeout}s python3 /sandbox/code.py"
+            )],
         )
 
         output = res.output.decode("utf-8", errors="replace")
@@ -188,6 +227,16 @@ class Sandbox:
         return output, False
 
     def build(self, path: str = ".") -> None:
+        """
+        Build the sandbox Docker image from a Dockerfile.
+
+        Args:
+            path: Directory containing the Dockerfile.
+
+        Raises:
+            FileNotFoundError: If no Dockerfile exists at path.
+            BuildError: If the Docker build itself fails.
+        """
         dockerfile_path = os.path.join(path, "Dockerfile")
         if not os.path.exists(dockerfile_path):
             raise FileNotFoundError(
@@ -198,6 +247,8 @@ class Sandbox:
             with open(dockerfile_path, "r", encoding="utf-8") as f:
                 dockerfile_content = f.read()
 
+            # path=None means Docker only sees the Dockerfile
+            # contents, not the surrounding build context/files.
             self.client.images.build(
                 fileobj=io.BytesIO(dockerfile_content.encode("utf-8")),
                 path=None,
@@ -213,6 +264,11 @@ class Sandbox:
             raise e
 
     def _start_mcp_client(self) -> None:
+        """
+        Launch the appropriate MCP tool server subprocess for
+        this agent type, passing it the container id and config so
+        it can act on the already-running sandbox.
+        """
         if self.mcp_client is not None:
             return
 
@@ -245,6 +301,14 @@ class Sandbox:
             )
 
     def start(self) -> None:
+        """
+        Start the sandbox container (if not already running)
+        with no network access and a memory cap, then start its
+        MCP tool server.
+
+        Raises:
+            Exception: Re-raised if the container fails to start.
+        """
         if not self.container:
             try:
                 self.container = self.client.containers.run(
@@ -268,6 +332,13 @@ class Sandbox:
                 raise e
 
     def pull(self) -> None:
+        """
+        Pull self.image from the registry.
+
+        Raises:
+            RuntimeError: If the image is not found.
+            Exception: Re-raised for any other pull failure.
+        """
         try:
             print(
                 f"[bold green][+][/bold green] Pulling image "
@@ -286,12 +357,22 @@ class Sandbox:
             raise e
 
     def enter(self) -> None:
+        """
+        Open an interactive bash shell inside the running
+        container (for manual debugging).
+        """
         if not self.container:
             return
 
         os.system(f"docker exec -it {self.container.id} bash")
 
     def stop(self) -> None:
+        """
+        Stop and discard the running container, if any.
+
+        Raises:
+            Exception: Re-raised if stopping the container fails.
+        """
         if self.container:
             try:
                 self.container.stop()
@@ -302,11 +383,25 @@ class Sandbox:
     def _exec(
         self, cmd: str, timeout: int | None = None
     ) -> tuple[str, int]:
+        """
+        Run a shell command inside the container with a timeout.
+
+        Args:
+            cmd: Shell command to run.
+            timeout: Timeout in seconds; defaults to
+                config.max_execution_time_seconds.
+
+        Returns:
+            A tuple of (output, exit_code). output has a
+            "[TIMEOUT]" note appended if the command timed out.
+        """
         effective_timeout = (
             timeout
             if timeout is not None
             else self.config.max_execution_time_seconds
         )
+        # Quote the whole command so it survives being passed as a
+        # single argument to `bash -c` after `timeout`.
         wrapped = (
             f"timeout {effective_timeout}s bash -c " + shlex.quote(cmd)
         )

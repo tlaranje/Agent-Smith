@@ -168,7 +168,8 @@ class SolutionOutput(BaseModel):
 
 
 def _coerce(value: str) -> Any:
-    """Try to interpret a raw XML-captured string as a Python/JSON
+    """
+    Try to interpret a raw XML-captured string as a Python/JSON
     literal (int, float, bool, list, dict...) before falling back to
     the original string. Only the <invoke> XML format needs this --
     the JSON/ReAct formats already get correct types from json.loads."""
@@ -189,6 +190,13 @@ class SWEBenchAgent:
         self.current_llm_index: int = 0
 
     def chose_llm(self) -> None:
+        """
+        Switch to the next available LLM client.
+
+        Raises:
+            ValueError: If there are no more LLM clients/tokens
+                left to fall back to.
+        """
         if self.current_llm_index + 1 >= len(self.llms):
             raise ValueError("Error no more tokens.")
 
@@ -196,6 +204,18 @@ class SWEBenchAgent:
         self.llm = self.llms[self.current_llm_index]
 
     def solve(self, task: SWEBenchTaskInput) -> SolutionOutput:
+        """
+        Solve a SWE-bench task by iterating with the LLM and
+        sandbox until final_answer() is called or iterations run out.
+
+        Args:
+            task: The SWE-bench task definition, including the repo,
+                instance id, problem statement, and eval script.
+
+        Returns:
+            The resulting SolutionOutput, containing the produced
+            git patch and whether it was considered successful.
+        """
         start_time = time.time()
         steps: list[StepMetrics] = []
         total_requests = 0
@@ -220,6 +240,8 @@ class SWEBenchAgent:
             for iteration in range(self.max_iterations):
                 retries = 0
 
+                # Keep retrying with fallback LLMs until one call
+                # succeeds (e.g. handles rate limits/key errors).
                 while True:
                     try:
                         request_start = time.time()
@@ -254,6 +276,8 @@ class SWEBenchAgent:
                 if tool_name == "final_answer":
                     patch = self.sandbox.get_patch()
 
+                    # Guard against the model declaring victory
+                    # without having actually changed any files.
                     if not patch.strip():
                         messages.append(
                             {"role": "assistant", "content": llm_output}
@@ -326,6 +350,8 @@ class SWEBenchAgent:
                     {"role": "user", "content": f"Tool output:\n{tool_output}"}
                 )
         finally:
+            # Capture the patch and stop the sandbox regardless of
+            # whether we returned early or fell through the loop.
             patch = self.sandbox.get_patch()
             self.sandbox.stop()
 
@@ -359,8 +385,25 @@ class SWEBenchAgent:
             "When the issue is resolved, call final_answer()."
         )
 
-    @staticmethod
-    def extract_tool_call(llm_output: str | None, ) -> tuple[str | None, dict]:
+    def extract_tool_call(
+        self, llm_output: str | None
+    ) -> tuple[str | None, dict]:
+        """
+        Parse a single tool call out of raw LLM output.
+
+        Tries, in order: fenced/bare JSON, <invoke> XML,
+        <tool_call> JSON, ReAct-style Action/Action Input, and
+        finally a best-effort Python AST parse of a bare function
+        call (e.g. `read_file(filepath="x")`).
+
+        Args:
+            llm_output: The raw text returned by the LLM, or None.
+
+        Returns:
+            A tuple of (tool_name, tool_args). tool_name is None
+            if no valid tool call could be parsed, in which case
+            tool_args is an empty dict.
+        """
         if not llm_output:
             return None, {}
 
@@ -373,6 +416,7 @@ class SWEBenchAgent:
         if match:
             raw = match.group(1)
         else:
+            # Fallback: grab the first bare {...} blob in the text.
             match = re.search(r"\{[\s\S]*\}", llm_output)
             if match:
                 raw = match.group(0)
@@ -381,6 +425,8 @@ class SWEBenchAgent:
             try:
                 obj = json.loads(raw)
 
+                # Accept either {"tool": ..., "args": {...}} or
+                # {"name": ..., "arguments": {...}} shapes.
                 if "tool" in obj:
                     args = obj.get("args", {})
                     if not isinstance(args, dict):
@@ -452,11 +498,13 @@ class SWEBenchAgent:
         if code_match:
             code = code_match.group(1).strip()
         else:
-            known_tools = (
-                "read_file", "edit_file", "list_files", "search_code",
-                "search_function_or_class_definition_in_code",
-                "find_references", "run_tests", "run_command", "final_answer",
-            )
+            # No code fence at all: only accept a bare call if it
+            # matches one of our known tool names, otherwise treat
+            # the whole output as unparsable code (will fail below).
+            assert self.sandbox.mcp_client is not None
+            known_tools = tuple(
+                t.name for t in self.sandbox.mcp_client.list_tools()
+            ) + ("final_answer",)
             m = re.search(r"\b([a-zA-Z_]\w*)\s*\([^()]*\)", llm_output)
             code = (
                 m.group(0)
@@ -470,6 +518,8 @@ class SWEBenchAgent:
             tree = None
 
         if tree is not None:
+            # Walk the AST looking for a single call with only
+            # literal keyword arguments, e.g. foo(bar=1, baz="x").
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(
                    node.func, ast.Name):

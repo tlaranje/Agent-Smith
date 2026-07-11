@@ -10,6 +10,14 @@ import docker
 
 
 async def main():
+    """
+    Smoke-test the MCP HTTP server against a live sandbox
+    container: start a container, initialize a session with a
+    sample task, then call run_tests with a sample solution.
+
+    Raises:
+        docker.errors.APIError: If the container fails to start.
+    """
     client = docker.from_env()
     container = client.containers.run(
         "agent_sandbox:latest",
@@ -19,6 +27,8 @@ async def main():
     )
 
     try:
+        # Register the container and its test list with the MCP
+        # server before opening a tool session.
         async with httpx.AsyncClient() as http:
             resp = await http.post(
                 "http://localhost:8000/initialize",
@@ -34,11 +44,14 @@ async def main():
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
+                # Run a correct sample solution through run_tests
+                # to confirm the tool call round-trips correctly.
                 code = "def soma(a, b):\n    return a + b\n"
                 result = await session.call_tool("run_tests", {"code": code})
                 print("run_tests:", result)
 
     finally:
+        # Always stop the container, even if a request above fails.
         container.stop()
 
 

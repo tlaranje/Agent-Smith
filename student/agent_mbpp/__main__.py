@@ -7,6 +7,13 @@ import argparse
 
 
 def main() -> None:
+    """
+    Run the MBPP agent end-to-end.
+
+    Raises:
+        FileNotFoundError: If the task file does not exist.
+        OSError: If the output file cannot be written.
+    """
     parser = argparse.ArgumentParser(
         description="MBPP Agent"
     )
@@ -27,6 +34,8 @@ def main() -> None:
         args.task_file
     )
 
+    # Build and start an isolated sandbox to run the agent's
+    # generated code safely.
     sandbox = Sandbox("MBPP")
     sandbox.build("..")
     sandbox.start()

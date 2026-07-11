@@ -7,6 +7,13 @@ from src.APIs import get_llms
 
 
 def main() -> None:
+    """
+    Run the SWE-Bench agent end-to-end.
+
+    Raises:
+        FileNotFoundError: If the task file does not exist.
+        OSError: If the output file cannot be written.
+    """
     parser = argparse.ArgumentParser(
         description="SWE Bench Agent"
     )
@@ -26,7 +33,13 @@ def main() -> None:
     task: SWEBenchTaskInput = SWEBenchTaskInput.from_file(
         args.task_file
     )
+
+    # Sandbox is built from the task's own Docker image, since
+    # SWE-Bench tasks require the original repo environment.
     sandbox: Sandbox = Sandbox("SWE_BENCH", task.docker_image)
+
+    # max_iterations caps the number of agent steps to avoid
+    # infinite loops when a fix is never found.
     agent: SWEBenchAgent = SWEBenchAgent(
         get_llms(args.model_name, args.provider_url),
         sandbox, max_iterations=30

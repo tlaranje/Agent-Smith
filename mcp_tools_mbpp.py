@@ -8,6 +8,10 @@ mcp = FastMCP("mbpp-tools")
 
 
 def _load_config() -> SandboxConfig:
+    """
+    Load a SandboxConfig from the SANDBOX_CONFIG_JSON env var,
+    falling back to defaults if it is not set.
+    """
     raw = os.environ.get("SANDBOX_CONFIG_JSON", "")
     if raw:
         return SandboxConfig.model_validate_json(raw)
@@ -17,6 +21,8 @@ def _load_config() -> SandboxConfig:
 sandbox: Sandbox | None = None
 current_task_tests: list[str] = []
 
+# When launched as a subprocess by Sandbox.start(), attach to the
+# already-running container instead of creating a new one.
 if os.environ.get("IS_MCP_SERVER"):
     container_id = os.environ.get("DOCKER_CONTAINER_ID", "")
     if not container_id:
@@ -30,6 +36,10 @@ if os.environ.get("IS_MCP_SERVER"):
 
 @mcp.custom_route("/initialize", methods=["POST"])
 async def initialize(request: Request) -> JSONResponse:
+    """
+    HTTP endpoint used by clients to (re)attach the server to a
+    running container and load the task's tests for this session.
+    """
     global sandbox, current_task_tests
     payload = await request.json()
 
@@ -59,6 +69,17 @@ async def initialize(request: Request) -> JSONResponse:
 
 @mcp.tool()
 def set_current_task_tests(test_list: list[str] | None = None) -> str:
+    """
+    Configure the tests used by run_tests for the current task.
+
+    Args:
+        test_list: List of assert statements to run against the
+            submitted solution.
+
+    Returns:
+        A confirmation message, or an error string if test_list
+        is missing.
+    """
     global current_task_tests
     if test_list is None:
         return "ERROR: test_list is required."
@@ -69,6 +90,17 @@ def set_current_task_tests(test_list: list[str] | None = None) -> str:
 
 @mcp.tool()
 def run_tests(code: str | None = None) -> str:
+    """
+    Run submitted code against the current task's tests inside
+    the sandbox.
+
+    Args:
+        code: The Python solution code to execute.
+
+    Returns:
+        A success message with sandbox output if all tests pass,
+        or a failure/error message otherwise.
+    """
     if code is None:
         return "ERROR: code is required."
 

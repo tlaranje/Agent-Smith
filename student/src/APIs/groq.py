@@ -1,25 +1,33 @@
-from groq import Groq
 from groq.types.chat import ChatCompletionMessageParam
 from typing import Any
+from groq import Groq
 
 
 class GroqAPI:
     def __init__(
-        self,
-        api_key: str,
-        model_name: str = "llama-3.3-70b-versatile",
+        self, api_key: str, model_name: str = "llama-3.3-70b-versatile",
         api_url: str = "https://api.groq.com"
     ) -> None:
         self.api_key = api_key
         self.model_name = model_name
         self.api_url = api_url
-        self.client = Groq(
-            api_key=api_key,
-            base_url=api_url
-        )
+        self.client = Groq(api_key=api_key, base_url=api_url)
 
-    def generate_messages(self,
-                          messages: list[ChatCompletionMessageParam]) -> Any:
+    def generate_messages(
+        self, messages: list[ChatCompletionMessageParam]
+    ) -> Any:
+        """
+        Send messages to the Groq chat API and wrap the result
+        in a common LLMResponse.
+
+        Args:
+            messages: Conversation history as Groq chat message
+                params.
+
+        Returns:
+            An LLMResponse with the generated content and token
+            usage counts.
+        """
         from . import LLMResponse
 
         chat_completion = self.client.chat.completions.create(

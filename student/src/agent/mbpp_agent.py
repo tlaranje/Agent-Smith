@@ -25,7 +25,13 @@ Requirements:
   tested and submitted automatically.
 - Once you are confident your solution is correct, call
   final_answer("your complete clean function code here") as the last
-  line of your code.
+  line of your code. The argument to final_answer MUST be the
+  function's source code as a string (e.g. the def statement and
+  its body), NOT the result of calling the function. Automated
+  tests are appended after your code and run against the function
+  you define -- final_answer only records your final solution, it
+  does not need to be called with the correct output for tests to
+  pass.
 """
 
 
@@ -45,12 +51,11 @@ class StepMetrics(BaseModel):
 
 
 class SolutionOutput(BaseModel):
-    """Output from student solution - this is what students must
-    produce."""
+    """Output from student solution - this is what students must produce."""
     task_id: str
-    benchmark: str  # "mbpp" or "swebench"
+    benchmark: str
     success: bool
-    solution: str  # Code for MBPP, patch for SWE-bench
+    solution: str
     system_prompt: str
     iterations: int
     total_requests: int
@@ -63,21 +68,19 @@ class SolutionOutput(BaseModel):
 
 
 def _coerce(value: str) -> Any:
-    """Try to interpret a raw XML-captured string as a Python/JSON
+    """
+    Try to interpret a raw XML-captured string as a Python/JSON
     literal (int, float, bool, list, dict...) before falling back to
     the original string. json.loads already distinguishes these
     correctly for the JSON/ReAct formats, but the <invoke> XML format
-    is captured via plain regex, so this is only needed here."""
+    is captured via plain regex, so this is only needed here.
+    """
     try:
         return json.loads(value)
     except (json.JSONDecodeError, ValueError):
         return value
 
 
-# Tools that exist on the MBPP MCP server for the agent's own internal
-# use (setting up the task, running the harness) -- these are never
-# meant to be called by the LLM inside the code it writes, so they are
-# hidden from the manual shown in the prompt.
 _INTERNAL_ONLY_TOOLS = {"set_current_task_tests", "run_tests"}
 
 
@@ -94,6 +97,13 @@ class MBPPAgent:
         self.current_llm_index: int = 0
 
     def chose_llm(self) -> None:
+        """
+        Switch to the next available LLM client.
+
+        Raises:
+            ValueError: If there are no more LLM clients/tokens
+                left to fall back to.
+        """
         if self.current_llm_index + 1 >= len(self.llms):
             raise ValueError("Error no more tokens.")
 
@@ -101,6 +111,17 @@ class MBPPAgent:
         self.llm = self.llms[self.current_llm_index]
 
     def solve(self, task: MBPPTaskInput) -> SolutionOutput:
+        """
+        Solve an MBPP task by iterating with the LLM and sandbox.
+
+        Args:
+            task: The MBPP task definition, including the function
+                signature and the tests it must pass.
+
+        Returns:
+            The resulting SolutionOutput, either with a passing
+            solution or marked as failed after max_iterations.
+        """
         start_time = time.time()
         steps: list[StepMetrics] = []
         total_requests = 0
@@ -110,10 +131,14 @@ class MBPPAgent:
         self.sandbox.start()
         assert self.sandbox.mcp_client is not None
 
+        # Register this task's tests in the sandbox so the
+        # run_tests tool knows what to check against.
         self.sandbox.mcp_client.call_tool(
             "set_current_task_tests", test_list=task.test_list
         )
 
+        # Build the tool manual shown to the LLM, hiding the
+        # internal-only tools (task setup, test runner).
         manual = self.sandbox.mcp_client.generate_manual(
             exclude=_INTERNAL_ONLY_TOOLS
         )
@@ -130,6 +155,8 @@ class MBPPAgent:
         try:
             for iteration in range(self.max_iterations):
                 retries = 0
+                # Keep retrying with fallback LLMs until one call
+                # succeeds (e.g. handles rate limits/key errors).
                 while True:
                     try:
                         request_start = time.time()
@@ -153,13 +180,6 @@ class MBPPAgent:
 
                 code = self.extract_code(response.content or "")
 
-                # Every code path -- including final_answer -- is
-                # executed inside the sandboxed container via the
-                # run_tests MCP tool. Sandbox.execute() already injects
-                # the final_answer shim and checks
-                # /tmp/agent/final_result.py there, so nothing is ever
-                # exec()'d in this process, and the code logged below is
-                # exactly what ran.
                 sandbox_output = self.sandbox.mcp_client.call_tool(
                     "run_tests", code=code
                 )
@@ -260,12 +280,30 @@ class MBPPAgent:
 
     @staticmethod
     def extract_code(text: str) -> str:
+        """
+        Extract executable code from a raw LLM response.
+
+        Tries several known formats in order (markdown code block,
+        <invoke> XML, <tool_call> JSON, ReAct-style Action/Action
+        Input, and bare XML), converting tool calls into an
+        equivalent `result = tool(...)` call. Falls back to the
+        stripped raw text if nothing matches.
+
+        Args:
+            text: The raw text returned by the LLM.
+
+        Returns:
+            A string of Python code ready to run in the sandbox.
+        """
+        # Preferred format: a fenced ```python``` code block.
         match = re.search(
             r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE
         )
         if match:
             return match.group(1).strip()
 
+        # Anthropic-style <invoke name="tool"><parameter ...>
+        # tool-call format.
         match = re.search(
             r"<invoke\s+name=\"([^\"]+)\">(.*?)</invoke>", text, re.DOTALL
         )
@@ -283,6 +321,8 @@ class MBPPAgent:
             params = ", ".join(f"{k}={v!r}" for k, v in args.items())
             return f"result = {tool}({params})"
 
+        # <tool_call>{"name": ..., "arguments": {...}}</tool_call>
+        # format used by some open models.
         match = re.search(
             r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL,
         )
@@ -296,6 +336,7 @@ class MBPPAgent:
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
+        # ReAct-style "Action: tool\nAction Input: {...}" format.
         match = re.search(
             r"Action:\s*(\w+)\s*"r"Action Input:\s*(\{.*?\})", text, re.DOTALL,
         )
@@ -309,6 +350,8 @@ class MBPPAgent:
             params = ", ".join(f"{k}={v!r}" for k, v in args.items())
             return f"result = {tool}({params})"
 
+        # Last resort: try parsing the whole text as a bare
+        # <invoke> XML element.
         try:
             root = ET.fromstring(text)
             if root.tag == "invoke":

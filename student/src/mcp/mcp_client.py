@@ -10,12 +10,27 @@ import os
 
 class MCPClient:
     def __init__(
-        self,
-        command: str | None = None,
-        args: list[str] | None = None,
-        env: dict | None = None,
-        url: str | None = None,
+        self, command: str | None = None, args: list[str] | None = None,
+        env: dict | None = None, url: str | None = None
     ) -> None:
+        """
+        Create an MCP client connected via stdio or HTTP.
+
+        Starts a dedicated background event loop/thread and
+        connects synchronously before returning.
+
+        Args:
+            command: Executable to spawn for a stdio-based server.
+                Required if url is not given.
+            args: Command-line arguments for the stdio server.
+            env: Environment variables for the stdio server.
+                Defaults to a copy of the current environment.
+            url: URL of a streamable-HTTP MCP server. Required if
+                command is not given.
+
+        Raises:
+            ValueError: If neither command nor url is provided.
+        """
         if not command and not url:
             raise ValueError("MCPClient requires either command or url")
 
@@ -24,6 +39,8 @@ class MCPClient:
         self._env = env if env is not None else dict(os.environ)
         self._url = url
 
+        # Run all async MCP calls on a private loop/thread so this
+        # class exposes a plain synchronous API to callers.
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
@@ -37,6 +54,10 @@ class MCPClient:
         future.result()
 
     async def _connect(self) -> None:
+        """
+        Open the transport (HTTP or stdio) and initialize the
+        MCP session on the background event loop.
+        """
         if self._url:
             self._http_cm = streamablehttp_client(self._url)
             read_stream, write_stream, _get_session_id = (
@@ -54,13 +75,22 @@ class MCPClient:
 
         self._session_cm = ClientSession(read_stream, write_stream)
         self._session = await self._session_cm.__aenter__()
+        assert self._session is not None
         await self._session.initialize()
 
     def _run_loop(self) -> None:
+        """
+        Entry point for the background thread: run the private
+        event loop forever.
+        """
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
     async def _call_tool_async(self, name: str, /, **kwargs: Any) -> str:
+        """
+        Call a tool on the MCP session and return its text
+        content, or an empty string if there is none.
+        """
         assert self._session is not None
         result = await self._session.call_tool(name, arguments=kwargs)
         if not result.content:
@@ -71,6 +101,19 @@ class MCPClient:
         return ""
 
     def call_tool(self, name: str, /, **kwargs: Any) -> str:
+        """
+        Call an MCP tool synchronously, translating errors into
+        readable error strings instead of raising.
+
+        Args:
+            name: Name of the tool to call.
+            **kwargs: Arguments passed to the tool.
+
+        Returns:
+            The tool's text output, or a formatted error message
+            if the tool name is unknown, the arguments are invalid,
+            or execution fails.
+        """
         allowed_tools_name: list[str] = [t.name for t in self.list_tools()]
         if name not in allowed_tools_name:
             return (
@@ -104,6 +147,10 @@ class MCPClient:
             )
 
     def discover_tools(self) -> dict[str, Callable[..., str]]:
+        """
+        Build a dict of callable Python wrappers, one per
+        available MCP tool, keyed by tool name.
+        """
         if self._session is None:
             return {}
 
@@ -118,12 +165,20 @@ class MCPClient:
         return wrappers
 
     def _make_wrapper(self, tool_name: str) -> Callable[..., str]:
+        """
+        Create a closure that calls call_tool with a fixed
+        tool_name, so it can be used as a plain Python function.
+        """
         def wrapper(**kwargs: Any) -> str:
             return self.call_tool(tool_name, **kwargs)
         wrapper.__name__ = tool_name
         return wrapper
 
     def close(self) -> None:
+        """
+        Tear down the session and transport, then stop the
+        background event loop and join its thread.
+        """
         async def _shutdown() -> None:
             if self._session_cm:
                 await self._session_cm.__aexit__(None, None, None)
@@ -138,6 +193,10 @@ class MCPClient:
         self._thread.join(timeout=2)
 
     def list_tools(self) -> Any:
+        """
+        Return the list of tools exposed by the connected MCP
+        server, or an empty dict if not yet connected.
+        """
         if self._session is None:
             return {}
 
@@ -147,6 +206,19 @@ class MCPClient:
         return future.result().tools
 
     def generate_manual(self, exclude: set[str] | None = None) -> str:
+        """
+        Build a human/LLM-readable manual describing each
+        available tool as a callable Python function.
+
+        Args:
+            exclude: Tool names to omit from the manual (e.g.
+                internal-only tools not meant for the LLM).
+
+        Returns:
+            A Markdown string listing each tool's description,
+            arguments, and a usage example, or a message saying
+            no tools are available.
+        """
         exclude = exclude or set()
         tools = [t for t in self.list_tools() if t.name not in exclude]
 
