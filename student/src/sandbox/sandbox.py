@@ -384,8 +384,11 @@ class Sandbox:
         self, cmd: str, timeout: int | None = None
     ) -> tuple[str, int]:
         """
-        Run a shell command inside the container with time and memory
-        limits.
+        Run a shell command inside the container with a wall-clock
+        timeout. Memory is bounded by the container's cgroup mem_limit
+        (set at container start), not by a per-command ulimit, since
+        commands run here (git, pip, etc.) can need large virtual
+        memory mappings without actually using much physical memory.
 
         Args:
             cmd: Shell command to run.
@@ -402,12 +405,10 @@ class Sandbox:
             if timeout is not None
             else self.config.max_execution_time_seconds
         )
-        memory_kb = self.config.max_memory_mb * 1024
 
         # Quote the command so it survives being passed as a single
         # argument to bash -c.
         wrapped_cmd = (
-            f"ulimit -v {memory_kb}; "
             f"timeout {effective_timeout}s bash -c {shlex.quote(cmd)}"
         )
 
@@ -428,6 +429,9 @@ class Sandbox:
             result.exit_code == 137
             or "MemoryError" in output
         ):
+            # This now reflects the container's cgroup mem_limit
+            # killing the process (OOM), not a ulimit -v mapping
+            # failure — so it's a more accurate signal than before.
             output += (
                 "\n[MEMORY LIMIT EXCEEDED] "
                 f"Command exceeded {self.config.max_memory_mb} MB."

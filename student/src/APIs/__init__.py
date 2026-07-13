@@ -75,7 +75,7 @@ def get_llms(
         ]),
         "cohere": (CohereAPI, "COHERE_API_KEY", ["cohere/", "command"]),
         "mistral": (MistralAPI, "MISTRAL_API_KEY", [
-            "mistral/", "mistral-", "codestral-"
+            "mistral/", "mistral-", "codestral-", "devstral-", "open-mistral-"
         ]),
         "cerebras": (CerebrasAPI, "CEREBRAS_API_KEY", [
             "cerebras/", "gpt-oss-", "gemma-4-", "zai-glm-"
