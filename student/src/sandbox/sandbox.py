@@ -384,7 +384,8 @@ class Sandbox:
         self, cmd: str, timeout: int | None = None
     ) -> tuple[str, int]:
         """
-        Run a shell command inside the container with a timeout.
+        Run a shell command inside the container with time and memory
+        limits.
 
         Args:
             cmd: Shell command to run.
@@ -393,27 +394,43 @@ class Sandbox:
 
         Returns:
             A tuple of (output, exit_code). output has a
-            "[TIMEOUT]" note appended if the command timed out.
+            "[TIMEOUT]" or "[MEMORY LIMIT EXCEEDED]" note appended if
+            the command exceeded the configured limits.
         """
         effective_timeout = (
             timeout
             if timeout is not None
             else self.config.max_execution_time_seconds
         )
-        # Quote the whole command so it survives being passed as a
-        # single argument to `bash -c` after `timeout`.
-        wrapped = (
-            f"timeout {effective_timeout}s bash -c " + shlex.quote(cmd)
+        memory_kb = self.config.max_memory_mb * 1024
+
+        # Quote the command so it survives being passed as a single
+        # argument to bash -c.
+        wrapped_cmd = (
+            f"ulimit -v {memory_kb}; "
+            f"timeout {effective_timeout}s bash -c {shlex.quote(cmd)}"
         )
-        result = self.container.exec_run(["bash", "-c", wrapped])
+
+        result = self.container.exec_run(["bash", "-c", wrapped_cmd])
+
         output = (
             result.output.decode("utf-8", errors="replace")
             if result.output
             else ""
         )
+
         if result.exit_code == 124:
             output += (
                 f"\n[TIMEOUT] Command exceeded "
                 f"{effective_timeout} seconds."
             )
+        elif (
+            result.exit_code == 137
+            or "MemoryError" in output
+        ):
+            output += (
+                "\n[MEMORY LIMIT EXCEEDED] "
+                f"Command exceeded {self.config.max_memory_mb} MB."
+            )
+
         return output, result.exit_code

@@ -304,6 +304,8 @@ def run_tests() -> str:
         "bash /tmp/eval_script.sh",
         timeout=sandbox.config.max_execution_time_seconds,
     )
+    if code != 0:
+        return f"ERROR: {code}\n{out}"
     return f"Exit code: {code}\n{out}"
 
 
