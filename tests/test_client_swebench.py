@@ -12,8 +12,9 @@ import docker
 async def main():
     """
     Smoke-test the MCP HTTP server for SWE-bench-style tools:
-    start a container, initialize a session, then exercise
-    run_command, read_file, edit_file, and get_patch in sequence.
+    Start a container, initialize a session, dynamically detect the
+    working directory, and exercise run_command, read_file, edit_file,
+    and get_patch (both staged and unstaged) in sequence.
 
     Raises:
         docker.errors.APIError: If the container fails to start.
@@ -61,14 +62,17 @@ async def main():
                     [t.name for t in tools.tools],
                 )
 
-                # 1. DESCUBRE O DIRETÓRIO DE TRABALHO DE FORMA SEGURA
+                # 1. DYNAMICALLY DETECT THE DEFAULT WORKDIR OF THE MCP SERVER
+                # This ensures git initialization and tool execution
+                # run in the exact same directory.
                 pwd_result = await session.call_tool(
                     "run_command",
                     {"command": "pwd"}
                 )
 
-                # Parsing ultra-seguro: procura a linha que começa com '/'
-                default_workdir = "/testbed"  # Fallback seguro
+                # Ultra-safe parsing: extract the line starting with
+                # a forward slash '/'
+                default_workdir = "/testbed"  # Safe fallback
                 if pwd_result.content and len(pwd_result.content) > 0:
                     lines = pwd_result.content[0].text.split("\n")
                     for line in lines:
@@ -82,10 +86,10 @@ async def main():
                     f"{default_workdir}"
                 )
 
-                # 2. INICIALIZA O REPOSITÓRIO GIT NO CONTAINER
-                # Criamos a pasta, damos permissões totais para
-                # evitar conflitos de utilizador do MCP,
-                # e inicializamos o repositório git.
+                # 2. INITIALIZE GIT REPOSITORY INSIDE THE CONTAINER
+                # Create the folder, set wide open permissions
+                # to prevent user/permission
+                # conflicts from the MCP environment, and initialize git.
                 setup_cmd = (
                     f"mkdir -p {default_workdir} && "
                     f"chmod -R 777 {default_workdir} && "
@@ -103,7 +107,7 @@ async def main():
                     setup.output.decode("utf-8", "replace").strip()
                 )
 
-                # 3. FAZ AS ALTERAÇÕES ATRAVÉS DO MCP
+                # 3. PERFORM FILE MODIFICATIONS THROUGH MCP TOOLS
                 result = await session.call_tool(
                     "run_command",
                     {
@@ -131,7 +135,7 @@ async def main():
                 )
                 print("edit_file:", result)
 
-                # 4. TESTAR O GET_PATCH COM ALTERAÇÕES UNSTAGED
+                # 4. TEST GET_PATCH WITH UNSTAGED CHANGES
                 print(
                     "[bold green][+][/bold green] Testing get_patch with "
                     "unstaged changes:"
@@ -139,14 +143,14 @@ async def main():
                 result_unstaged = await session.call_tool("get_patch", {})
                 print("get_patch (unstaged):", result_unstaged)
 
-                # 5. ADICIONAR AO INDEX DO GIT (STAGED)
+                # 5. STAGE THE CHANGES (GIT ADD)
                 result = await session.call_tool(
                     "run_command",
                     {"command": "git add -A", "workdir": default_workdir},
                 )
                 print("git add:", result)
 
-                # 6. TESTAR O GET_PATCH DEPOIS DO ADD
+                # 6. TEST GET_PATCH WITH STAGED CHANGES
                 print(
                     "[bold green][+][/bold green] Testing "
                     "get_patch after git add:"
