@@ -9,6 +9,10 @@ import time
 import sys
 import re
 
+RED = "\033[91m"
+YELLOW = "\033[93m"
+END = "\033[0m"
+
 SYSTEM_PROMPT = """
 You are an expert Python programmer.
 
@@ -33,6 +37,25 @@ Requirements:
   does not need to be called with the correct output for tests to
   pass.
 """
+
+
+def short_error(e: Exception, max_len: int = 150) -> str:
+    msg = str(e).replace("\n", " ").strip()
+
+    match = re.search(r"'message':\s*'([^']*)'", msg)
+    if match:
+        msg = match.group(1)
+    else:
+        msg = re.sub(r"^\w*Error:?\s*", "", msg)
+        msg = re.sub(r"^\d{3}[\s\-:]*[A-Z_]*\.?\s*", "", msg)
+
+    if ". " in msg:
+        msg = msg.split(". ")[0] + "."
+
+    if len(msg) > max_len:
+        msg = msg[:max_len].rstrip() + "..."
+
+    return msg.strip()
 
 
 class StepMetrics(BaseModel):
@@ -164,17 +187,23 @@ class MBPPAgent:
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
-                    except Exception:
+                    except Exception as e:
                         retries += 1
                         print(
-                            "[Warning] Error occurred"
-                            f" with {self.llm.model_name}",
+                            f"{RED}[Warning] Error occurred with "
+                            f"{self.llm.model_name}: {type(e).__name__}: "
+                            f"{short_error(e)}{END}",
                             file=sys.stderr,
                         )
+                        if retries > 50:
+                            raise RuntimeError(
+                                "All LLM providers/keys failed after "
+                                f"{retries} retries. Last error: {e}"
+                            ) from e
                         self.chose_llm()
                         print(
-                            "[Warning] Switching API key"
-                            f" of LLM model {self.llm.model_name}",
+                            f"{YELLOW}[Warning] Switching API key"
+                            f" of LLM model {self.llm.model_name}{END}",
                             file=sys.stderr,
                         )
 

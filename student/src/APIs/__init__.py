@@ -65,7 +65,9 @@ def get_llms(
     # Each provider maps to (client class, env var prefix, list of
     # model-name prefixes used to detect this provider).
     provider_map = {
-        "gemini": (GeminiAPI, "GEMINI_API_KEY", ["gemini/", "gemini-"]),
+        "gemini": (GeminiAPI, "GEMINI_API_KEY", [
+            "gemini/", "gemini-"
+        ]),
         "groq": (GroqAPI, "GROQ_API_KEY", [
             "groq/", "llama-", "llama3-", "mixtral-"
         ]),
