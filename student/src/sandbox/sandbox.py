@@ -190,12 +190,23 @@ class Sandbox:
 
         output = res.output.decode("utf-8", errors="replace")
 
+        # --- OUTPUT SIZE TRUNCATION CHECK ---
+        # Get max limit from config if available, otherwise default to 1,000,000 characters
+        max_chars = getattr(self.config, "max_output_chars", 1000000)
+        is_truncated = False
+        if len(output) > max_chars:
+            output = output[:max_chars]
+            is_truncated = True
+
         if res.exit_code == 124:
-            return (
-                f"{output}"
-                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
-                False,
+            warn_msg = (
+                f"{output}\n\n"
+                f"[TIMEOUT] Execution exceeded {timeout} seconds.\n"
+                "[PARTIAL OUTPUT] The execution hit the timeout. The output above is partial."
             )
+            if is_truncated:
+                warn_msg += f"\n[TRUNCATED] The output also exceeded the size limit of {max_chars} characters and was cut short."
+            return warn_msg, False
 
         if res.exit_code == 137 or "MemoryError" in output:
             return (
@@ -205,10 +216,10 @@ class Sandbox:
             )
 
         if res.exit_code != 0:
-            return (
-                f"[RUNTIME ERROR]\n{output}",
-                False,
-            )
+            warn_msg = f"[RUNTIME ERROR]\n{output}"
+            if is_truncated:
+                warn_msg += f"\n\n[TRUNCATED] Output was truncated because it exceeded {max_chars} characters."
+            return warn_msg, False
 
         check = self.container.exec_run(
             "test -f /tmp/agent/final_result.py"
@@ -222,7 +233,17 @@ class Sandbox:
                 "utf-8", errors="replace"
             )
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
+            
+            # Truncate final answer as well if it exceeds limits
+            if len(answer) > max_chars:
+                answer = (
+                    f"{answer[:max_chars]}\n\n"
+                    f"[TRUNCATED] Final answer output was truncated because it exceeded {max_chars} characters."
+                )
             return answer, True
+
+        if is_truncated:
+            output += f"\n\n[TRUNCATED] Output was truncated because it exceeded {max_chars} characters."
 
         return output, False
 
