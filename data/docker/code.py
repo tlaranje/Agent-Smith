@@ -5,24 +5,9 @@ def final_answer(answer_string):
         _f.write(answer_string)
 
 def bitwise_xor(test_tup1, test_tup2):
-    """
-    Performs the mathematical bitwise xor operation across the given tuples.
-    """
-    result_list = []
-    for i in range(len(test_tup1)):
-        result_list.append(test_tup1[i] ^ test_tup2[i])
-    return tuple(result_list)
+    return tuple(x ^ y for x, y in zip(test_tup1, test_tup2))
 
-final_answer("""
-def bitwise_xor(test_tup1, test_tup2):
-    \"\"\"
-    Performs the mathematical bitwise xor operation across the given tuples.
-    \"\"\"
-    result_list = []
-    for i in range(len(test_tup1)):
-        result_list.append(test_tup1[i] ^ test_tup2[i])
-    return tuple(result_list)
-""")
+final_answer("def bitwise_xor(test_tup1, test_tup2):\n    return tuple(x ^ y for x, y in zip(test_tup1, test_tup2))")
 
 # --- AUTOMATED TESTS ---
 assert bitwise_xor((11, 5, 7, 10), (6, 3, 4, 4)) == (13, 6, 3, 14)
