@@ -42,7 +42,7 @@ def main() -> None:
     # infinite loops when a fix is never found.
     agent: SWEBenchAgent = SWEBenchAgent(
         get_llms(args.model_name, args.provider_url),
-        sandbox, max_iterations=30
+        sandbox, max_iterations=15
     )
     solution = agent.solve(task)
     output_path = Path(args.output)
