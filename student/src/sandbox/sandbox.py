@@ -263,7 +263,7 @@ class Sandbox:
         except Exception as e:
             raise e
 
-    def _start_mcp_client(self) -> None:
+    def _start_mcp_client(self, custom_command: str | None = None) -> None:
         """
         Launch the appropriate MCP tool server subprocess for
         this agent type, passing it the container id and config so
@@ -280,7 +280,26 @@ class Sandbox:
             self.eval_script.encode("utf-8")
         ).decode("ascii")
 
-        if self.agent == "MBPP":
+        # Se houver comando customizado passado pela CLI (mcp_command)
+        if custom_command:
+            import shlex
+            tokens = shlex.split(custom_command)
+            if not tokens:
+                raise ValueError("Custom MCP command cannot be empty")
+
+            # Resolve caminhos .py em relação à raiz
+            resolved = [
+                str(self._root_path / tok) if tok.endswith(".py") else tok
+                for tok in tokens
+            ]
+
+            self.mcp_client = MCPClient(
+                command=resolved[0],
+                args=resolved[1:],
+                env=server_env,
+            )
+        # Fallback para o comportamento padrão baseado no Benchmark
+        elif self.agent == "MBPP":
             self.mcp_client = MCPClient(
                 command="uv",
                 args=[
@@ -289,7 +308,6 @@ class Sandbox:
                 ],
                 env=server_env,
             )
-
         elif self.agent == "SWE_BENCH":
             self.mcp_client = MCPClient(
                 command="uv",
@@ -300,7 +318,7 @@ class Sandbox:
                 env=server_env,
             )
 
-    def start(self) -> None:
+    def start(self, custom_command: str | None = None) -> None:
         """
         Start the sandbox container (if not already running)
         with no network access and a memory cap, then start its
@@ -327,9 +345,42 @@ class Sandbox:
                         }
                     },
                 )
-                self._start_mcp_client()
+                self._start_mcp_client(custom_command=custom_command)
             except Exception as e:
                 raise e
+
+    def repl(self) -> None:
+        """
+        Launches an interactive Python REPL session pre-populated
+        with the MCP tools in its local namespace.
+        """
+        import code
+        if not self.container:
+            print("[bold red]Sandbox not running. Start it first.[/bold red]")
+            return
+
+        print(
+            "\n[bold green]=== Interactive Python "
+            "Sandbox REPL ===[/bold green]"
+        )
+        print("Loading tools into your namespace...")
+
+        namespace = self.build_namespace()
+
+        if self.mcp_client:
+            print(self.mcp_client.generate_manual())
+
+        banner = (
+            "\n"
+            "You are inside the local agent namespace.\n"
+            "Type your Python code below. Example:\n"
+            ">>> result = run_tests()\n"
+            ">>> print(result)\n"
+            "Type exit() or quit() to leave."
+        )
+
+        console = code.InteractiveConsole(locals=namespace)
+        console.interact(banner=banner, exitmsg="Exiting Python REPL.")
 
     def pull(self) -> None:
         """

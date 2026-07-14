@@ -5,7 +5,6 @@ from rich import print
 import subprocess
 import argparse
 import httpx
-import shlex
 import json
 import time
 import sys
@@ -81,49 +80,41 @@ def load_sandbox_config(template_path: str) -> SandboxConfig:
 
 def run_mcp_stdio(sandbox: Sandbox, mcp_command: str) -> None:
     """
-    Build and start the sandbox, then run an MCP server over stdio.
-
-    Prepares the environment variables required by the MCP server
-    (container id and serialized sandbox config), resolves any ``.py``
-    tokens in the command to absolute paths relative to the project
-    root, and runs the resulting command as a subprocess.
+    Build and start the sandbox, initializing the MCP server over stdio,
+    and then launch a Python REPL bound to the MCP-provided tools.
 
     Args:
-        sandbox: The Sandbox instance to build, start, and eventually
-            stop.
-        mcp_command: The shell command used to launch the MCP server,
-            e.g. "python server.py --flag".
-
-    Raises:
-        ValueError: If ``mcp_command`` is empty after tokenization.
+        sandbox: The Sandbox instance.
+        mcp_command: The shell command to launch the custom MCP server.
     """
+    print("[bold green][+][/bold green] Building and starting Sandbox...")
     sandbox.build("..")
-    sandbox.start()
 
-    root_path = Path(__file__).parent.parent.parent
-
-    # Environment variables consumed by the MCP server process.
-    server_env = dict(os.environ)
-    server_env["IS_MCP_SERVER"] = "1"
-    server_env["DOCKER_CONTAINER_ID"] = sandbox.container.id
-    server_env["SANDBOX_CONFIG_JSON"] = sandbox.config.model_dump_json()
-
-    tokens = shlex.split(mcp_command)
-    if not tokens:
-        raise ValueError("--mcp-stdio requires a non-empty command")
-
-    # Resolve relative .py script paths against the project root.
-    resolved = []
-    for tok in tokens:
-        if tok.endswith(".py"):
-            resolved.append(str(root_path / tok))
-        else:
-            resolved.append(tok)
+    sandbox.start(custom_command=mcp_command)
 
     try:
-        subprocess.run(resolved, env=server_env, check=True)
+        sandbox.repl()
     finally:
-        # Always stop the sandbox, even if the subprocess fails.
+        if sandbox.mcp_client:
+            sandbox.mcp_client.close()
+        sandbox.stop()
+
+
+def run_interactive_cli(sandbox: Sandbox) -> None:
+    """
+    Build, start, and enter an interactive sandbox session (Python REPL).
+
+    Args:
+        sandbox: The Sandbox instance to build, start, enter
+            interactively, and eventually stop.
+    """
+    try:
+        sandbox.build("..")
+        sandbox.start()
+        sandbox.repl()
+    finally:
+        if sandbox.mcp_client:
+            sandbox.mcp_client.close()
         sandbox.stop()
 
 
@@ -236,23 +227,6 @@ def run_mcp_http(
         # Ensure both the subprocess and the sandbox are cleaned up.
         server_process.terminate()
         server_process.wait()
-        sandbox.stop()
-
-
-def run_interactive_cli(sandbox: Sandbox) -> None:
-    """
-    Build, start, and enter an interactive sandbox session.
-
-    Args:
-        sandbox: The Sandbox instance to build, start, enter
-            interactively, and eventually stop.
-    """
-    try:
-        sandbox.build("..")
-        sandbox.start()
-        sandbox.enter()
-    finally:
-        # Always stop the sandbox, even if the interactive session fails.
         sandbox.stop()
 
 
