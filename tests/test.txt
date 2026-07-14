@@ -1,0 +1,62 @@
+================================================================================
+COMPLETE INSTRUCTIONS TO TEST ALL SANDBOX VARIATIONS (MBPP & SWE-BENCH)
+================================================================================
+
+This document contains the commands to test the sandbox under different modes:
+no arguments, MBPP (Stdio/HTTP), and SWE-bench (Stdio/HTTP).
+
+--------------------------------------------------------------------------------
+1. BASIC RUN (NO ARGUMENTS / HELP)
+--------------------------------------------------------------------------------
+Verify that the CLI installs and executes without crashing by running it
+with no arguments (which typically displays the help menu or default output).
+
+$ cd ~/D/Agent-Smith
+$ uv run sandbox --help
+
+--------------------------------------------------------------------------------
+2. SWE-BENCH SANDBOX TEST VARIATIONS
+--------------------------------------------------------------------------------
+
+A) SWE-bench - STDIO MODE (For direct integration with agents/clients like Claude Desktop)
+Runs the MCP server over standard input/output (stdio).
+
+$ uv run sandbox --transport stdio ../data/input/swebench_task.json
+
+B) SWE-bench - HTTP/MCP MODE (Using the API/Session Manager)
+Starts the HTTP server listening on a port for multi-session or client-based testing.
+
+# Start the server (Terminal 1)
+$ uv run sandbox --mcp-server "http://localhost:8000" ../data/input/swebench_task.json
+
+# Run the Python smoke test (Terminal 2)
+$ uv run python tests/test_client_swebench.py
+
+--------------------------------------------------------------------------------
+3. MBPP SANDBOX TEST VARIATIONS
+--------------------------------------------------------------------------------
+Testing Python code execution environments (usually smaller, function-level
+tasks rather than repository-level changes like SWE-bench).
+
+A) MBPP - STDIO MODE
+Starts the MBPP environment listening over standard input/output (stdio).
+
+$ uv run sandbox --transport stdio --task-type mbpp ../data/input/mbpp_task.json
+
+B) MBPP - HTTP/MCP MODE
+Starts the HTTP server targeting an MBPP test/environment.
+
+# Start the server (Terminal 1)
+$ uv run sandbox --mcp-server "http://localhost:8000" --task-type mbpp ../data/input/mbpp_task.json
+
+# Run your MBPP test client (Terminal 2)
+$ uv run python tests/test_client_mbpp.py
+
+--------------------------------------------------------------------------------
+4. QUICK HEALTH CHECKS
+--------------------------------------------------------------------------------
+For HTTP-based servers, you can quickly check if the endpoint is responsive
+before spinning up heavy testing pipelines:
+
+# Check HTTP Server status
+$ curl -I http://localhost:8000/
