@@ -190,12 +190,28 @@ class Sandbox:
 
         output = res.output.decode("utf-8", errors="replace")
 
+        # --- OUTPUT SIZE TRUNCATION CHECK ---
+        # Get max limit from config if available, otherwise
+        # default to 1,000,000 characters
+        max_chars = getattr(self.config, "max_output_chars", 1000000)
+        is_truncated = False
+        if len(output) > max_chars:
+            output = output[:max_chars]
+            is_truncated = True
+
         if res.exit_code == 124:
-            return (
-                f"{output}"
-                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
-                False,
+            warn_msg = (
+                f"{output}\n\n"
+                f"[TIMEOUT] Execution exceeded {timeout} seconds.\n"
+                "[PARTIAL OUTPUT] The execution hit the timeout. "
+                "The output above is partial."
             )
+            if is_truncated:
+                warn_msg += (
+                    "\n[TRUNCATED] The output also exceeded the "
+                    f"size limit of {max_chars} characters and was cut short."
+                )
+            return warn_msg, False
 
         if res.exit_code == 137 or "MemoryError" in output:
             return (
@@ -205,10 +221,13 @@ class Sandbox:
             )
 
         if res.exit_code != 0:
-            return (
-                f"[RUNTIME ERROR]\n{output}",
-                False,
-            )
+            warn_msg = f"[RUNTIME ERROR]\n{output}"
+            if is_truncated:
+                warn_msg += (
+                    "\n\n[TRUNCATED] Output was truncated "
+                    f"because it exceeded {max_chars} characters."
+                )
+            return warn_msg, False
 
         check = self.container.exec_run(
             "test -f /tmp/agent/final_result.py"
@@ -222,7 +241,20 @@ class Sandbox:
                 "utf-8", errors="replace"
             )
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
+            # Truncate final answer as well if it exceeds limits
+            if len(answer) > max_chars:
+                answer = (
+                    f"{answer[:max_chars]}\n\n"
+                    "[TRUNCATED] Final answer output was truncated "
+                    f"because it exceeded {max_chars} characters."
+                )
             return answer, True
+
+        if is_truncated:
+            output += (
+                "\n\n[TRUNCATED] Output was truncated "
+                f"because it exceeded {max_chars} characters."
+            )
 
         return output, False
 
@@ -448,8 +480,8 @@ class Sandbox:
 
         Returns:
             A tuple of (output, exit_code). output has a
-            "[TIMEOUT]" or "[MEMORY LIMIT EXCEEDED]" note appended if
-            the command exceeded the configured limits.
+            "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]", or "[TRUNCATED]" note
+            appended if the command exceeded the configured limits.
         """
         effective_timeout = (
             timeout
@@ -471,21 +503,32 @@ class Sandbox:
             else ""
         )
 
+        # --- OUTPUT SIZE TRUNCATION CHECK ---
+        max_chars = getattr(self.config, "max_output_chars", 1000000)
+        is_truncated = False
+        if len(output) > max_chars:
+            output = output[:max_chars]
+            is_truncated = True
+
         if result.exit_code == 124:
             output += (
-                f"\n[TIMEOUT] Command exceeded "
-                f"{effective_timeout} seconds."
+                f"\n[TIMEOUT] Command exceeded {effective_timeout} seconds.\n"
+                "[PARTIAL OUTPUT] The command execution hit "
+                "the timeout; the output above is partial."
             )
         elif (
             result.exit_code == 137
             or "MemoryError" in output
         ):
-            # This now reflects the container's cgroup mem_limit
-            # killing the process (OOM), not a ulimit -v mapping
-            # failure — so it's a more accurate signal than before.
             output += (
                 "\n[MEMORY LIMIT EXCEEDED] "
                 f"Command exceeded {self.config.max_memory_mb} MB."
+            )
+
+        if is_truncated:
+            output += (
+                f"\n[TRUNCATED] Tool output was truncated because it exceeded "
+                f"the maximum limit of {max_chars} characters."
             )
 
         return output, result.exit_code
