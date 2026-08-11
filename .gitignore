@@ -7,3 +7,5 @@ uv.lock
 .community.db
 data/output
 .mypy_cache
+data/moulinette
+data/exams
