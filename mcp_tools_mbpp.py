@@ -107,13 +107,10 @@ def run_tests(code: str | None = None) -> str:
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    if not current_task_tests:
-        return (
-            "Error: No active task. Call set_current_task_tests "
-            "first to load the tests."
-        )
-
     output, success = sandbox.execute(code, test_list=current_task_tests)
+
+    if len(current_task_tests) == 0:
+        return output
 
     if success:
         return (

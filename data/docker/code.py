@@ -4,10 +4,6 @@ def final_answer(answer_string):
     with open('/tmp/agent/final_result.py', 'w', encoding='utf-8') as _f:
         _f.write(answer_string)
 
-def bitwise_xor(test_tup1, test_tup2):
-    return tuple(x ^ y for x, y in zip(test_tup1, test_tup2))
 
-final_answer("def bitwise_xor(test_tup1, test_tup2):\n    return tuple(x ^ y for x, y in zip(test_tup1, test_tup2))")
-
-# --- AUTOMATED TESTS ---
-assert soma(1, 2) == 3
+def add(a, b):
+    return a + b

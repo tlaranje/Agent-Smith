@@ -1,4 +1,4 @@
-import student.src.APIs.cohere as cohere
+import cohere
 from typing import Any
 from cohere.types import (
     UserChatMessageV2,

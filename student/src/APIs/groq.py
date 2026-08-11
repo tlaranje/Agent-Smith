@@ -1,6 +1,6 @@
 from groq.types.chat import ChatCompletionMessageParam
 from typing import Any
-from student.src.APIs.groq import Groq
+from groq import Groq
 
 
 class GroqAPI:

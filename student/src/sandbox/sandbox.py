@@ -49,7 +49,7 @@ class Sandbox:
         )
         return out
 
-    def _final_answer(self, answer_string: str) -> None:
+    def _final_answer(self, answer: str) -> None:
         """
         Persist the agent's final answer to a fixed path so it
         can be retrieved after the sandboxed code finishes running.
@@ -58,7 +58,7 @@ class Sandbox:
         with open(
             "/tmp/agent/final_result.py", "w", encoding="utf-8"
         ) as f:
-            f.write(answer_string)
+            f.write(answer)
 
     def _restricted_builtins(self) -> dict:
         """
@@ -67,6 +67,7 @@ class Sandbox:
         exec/eval-related builtins).
         """
         import builtins
+        import json as json_module
         safe_builtins = {}
         allowed = [
             'abs', 'all', 'any', 'bin', 'bool', 'chr', 'dict', 'divmod',
@@ -76,11 +77,12 @@ class Sandbox:
             'range', 'repr', 'reversed', 'round', 'set', 'slice',
             'sorted', 'str', 'sum', 'tuple', 'type', 'zip', 'Exception',
             'ValueError', 'TypeError', 'AssertionError', 'IndexError',
-            'KeyError',
+            'KeyError', 'dir'
         ]
         for name in allowed:
             if hasattr(builtins, name):
                 safe_builtins[name] = getattr(builtins, name)
+        safe_builtins['json'] = json_module
         return safe_builtins
 
     def build_namespace(self) -> dict:
@@ -96,6 +98,8 @@ class Sandbox:
         }
         namespace.update(self.mcp_client.discover_tools())
         namespace["final_answer"] = self._final_answer
+        import json as json_module
+        namespace["json"] = json_module
         return namespace
 
     def _write_code_to_container(self, code: str, path: str) -> None:
