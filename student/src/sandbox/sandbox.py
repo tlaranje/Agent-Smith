@@ -68,6 +68,7 @@ class Sandbox:
         """
         import builtins
         import json as json_module
+
         safe_builtins = {}
         allowed = [
             'abs', 'all', 'any', 'bin', 'bool', 'chr', 'dict', 'divmod',
@@ -82,7 +83,21 @@ class Sandbox:
         for name in allowed:
             if hasattr(builtins, name):
                 safe_builtins[name] = getattr(builtins, name)
+
         safe_builtins['json'] = json_module
+
+        ALLOWED_IMPORTS = {'json'}
+
+        def _safe_import(
+            name, globals=None, locals=None, fromlist=(), level=0
+        ):
+            if name not in ALLOWED_IMPORTS:
+                raise ImportError(
+                    f"import of '{name}' is not allowed in the sandbox"
+                )
+            return __import__(name, globals, locals, fromlist, level)
+
+        safe_builtins['__import__'] = _safe_import
         return safe_builtins
 
     def build_namespace(self) -> dict:
@@ -385,11 +400,47 @@ class Sandbox:
             except Exception as e:
                 raise e
 
+    """ def repl(self) -> None:
+        import sys
+        import code
+
+        if not self.container:
+            print("[bold red]Sandbox not running. Start it first.[/bold red]")
+            return
+
+        print(
+            "\n[bold green]=== Interactive Python Sandbox REPL ===[/bold green]"
+        )
+        print("Loading tools into your namespace...")
+
+        namespace = self.build_namespace()
+
+        if self.mcp_client:
+            print(self.mcp_client.generate_manual())
+
+        if not sys.stdin.isatty():
+            # Non-interactive: stdin is piped input (e.g. `cat file | ...`).
+            # Read it all and exec as a whole script, avoiding the
+            # InteractiveConsole's line-by-line block-closing issues.
+            source = sys.stdin.read()
+            try:
+                exec(compile(source, "<piped_input>", "exec"), namespace)
+            except Exception as e:
+                print(f"[bold red]Error: {e}[/bold red]")
+            print("\nExiting Python REPL.")
+            return
+
+        banner = (
+            "\nYou are inside the local agent namespace.\n"
+            "Type your Python code below. Example:\n"
+            ">>> result = run_tests()\n"
+            ">>> print(result)\n"
+            "Type exit() or quit() to leave."
+        )
+        console = code.InteractiveConsole(locals=namespace)
+        console.interact(banner=banner, exitmsg="Exiting Python REPL.") """
+
     def repl(self) -> None:
-        """
-        Launches an interactive Python REPL session pre-populated
-        with the MCP tools in its local namespace.
-        """
         import code
         if not self.container:
             print("[bold red]Sandbox not running. Start it first.[/bold red]")
