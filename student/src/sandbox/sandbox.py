@@ -417,8 +417,7 @@ class Sandbox:
         console exactly as interactive input would, but afterwards
         explicitly flushes any statement still buffered by the
         console (its "last block") instead of silently discarding
-        it - this is what a real terminal user does implicitly by
-        pressing Enter one extra time, but never happens on EOF.
+        it.
 
         Each pushed statement is wall-clock bounded by
         config.max_execution_time_seconds via SIGALRM, so that a
@@ -434,16 +433,10 @@ class Sandbox:
             print("[bold red]Sandbox not running. Start it first.[/bold red]")
             return
 
-        print(
-            "\n[bold green]=== Interactive Python "
-            "Sandbox REPL ===[/bold green]"
-        )
-        print("Loading tools into your namespace...")
-
         namespace = self.build_namespace()
 
-        if self.mcp_client:
-            print(self.mcp_client.generate_manual())
+        # if self.mcp_client:
+        #     print(self.mcp_client.generate_manual())
 
         banner = (
             "\n"
