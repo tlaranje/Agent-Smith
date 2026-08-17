@@ -199,11 +199,17 @@ class Sandbox:
         memory_kb = self.config.max_memory_mb * 1024
 
         # ulimit caps virtual memory; timeout caps wall-clock time,
-        # both enforced inside the container itself.
+        # both enforced inside the container itself. --kill-after
+        # ensures that any leftover child processes (threads,
+        # subprocesses, etc.) that survive the initial SIGTERM are
+        # forcibly killed with SIGKILL shortly after, so their file
+        # descriptors close and the exec_run output stream doesn't
+        # hang waiting for EOF.
         res = self.container.exec_run(
             cmd=["bash", "-lc", (
                 f"ulimit -v {memory_kb}; "
-                f"timeout {timeout}s python3 /sandbox/code.py"
+                f"timeout --kill-after=2s --signal=TERM {timeout}s "
+                f"python3 /sandbox/code.py"
             )],
         )
 
@@ -331,14 +337,14 @@ class Sandbox:
             self.eval_script.encode("utf-8")
         ).decode("ascii")
 
-        # Se houver comando customizado passado pela CLI (mcp_command)
+        # If a custom command was passed via the CLI (mcp_command), use it.
         if custom_command:
             import shlex
             tokens = shlex.split(custom_command)
             if not tokens:
                 raise ValueError("Custom MCP command cannot be empty")
 
-            # Resolve caminhos .py em relação à raiz
+            # Resolve .py paths relative to the project root.
             resolved = [
                 str(self._root_path / tok) if tok.endswith(".py") else tok
                 for tok in tokens
@@ -349,7 +355,7 @@ class Sandbox:
                 args=resolved[1:],
                 env=server_env,
             )
-        # Fallback para o comportamento padrão baseado no Benchmark
+        # Fall back to default behavior based on the benchmark.
         elif self.agent == "MBPP":
             self.mcp_client = MCPClient(
                 command="uv",
@@ -400,48 +406,30 @@ class Sandbox:
             except Exception as e:
                 raise e
 
-    """ def repl(self) -> None:
+    def repl(self) -> None:
+        """
+        Launches an interactive Python REPL session pre-populated
+        with the MCP tools in its local namespace.
+
+        If stdin is a TTY, runs a normal interactive console. If
+        stdin is piped (e.g. `cat file | uv run sandbox ...`, as
+        used by automated test harnesses), feeds each line to the
+        console exactly as interactive input would, but afterwards
+        explicitly flushes any statement still buffered by the
+        console (its "last block") instead of silently discarding
+        it - this is what a real terminal user does implicitly by
+        pressing Enter one extra time, but never happens on EOF.
+
+        Each pushed statement is wall-clock bounded by
+        config.max_execution_time_seconds via SIGALRM, so that a
+        long-running or infinite-looping statement typed (or piped)
+        into the REPL is interrupted with a catchable exception
+        instead of hanging the process indefinitely.
+        """
         import sys
         import code
+        import signal
 
-        if not self.container:
-            print("[bold red]Sandbox not running. Start it first.[/bold red]")
-            return
-
-        print(
-            "\n[bold green]=== Interactive Python Sandbox REPL ===[/bold green]"
-        )
-        print("Loading tools into your namespace...")
-
-        namespace = self.build_namespace()
-
-        if self.mcp_client:
-            print(self.mcp_client.generate_manual())
-
-        if not sys.stdin.isatty():
-            # Non-interactive: stdin is piped input (e.g. `cat file | ...`).
-            # Read it all and exec as a whole script, avoiding the
-            # InteractiveConsole's line-by-line block-closing issues.
-            source = sys.stdin.read()
-            try:
-                exec(compile(source, "<piped_input>", "exec"), namespace)
-            except Exception as e:
-                print(f"[bold red]Error: {e}[/bold red]")
-            print("\nExiting Python REPL.")
-            return
-
-        banner = (
-            "\nYou are inside the local agent namespace.\n"
-            "Type your Python code below. Example:\n"
-            ">>> result = run_tests()\n"
-            ">>> print(result)\n"
-            "Type exit() or quit() to leave."
-        )
-        console = code.InteractiveConsole(locals=namespace)
-        console.interact(banner=banner, exitmsg="Exiting Python REPL.") """
-
-    def repl(self) -> None:
-        import code
         if not self.container:
             print("[bold red]Sandbox not running. Start it first.[/bold red]")
             return
@@ -467,6 +455,53 @@ class Sandbox:
         )
 
         console = code.InteractiveConsole(locals=namespace)
+
+        statement_timeout = self.config.max_execution_time_seconds
+
+        class _StatementTimeout(Exception):
+            """Raised when a single REPL statement exceeds the time limit."""
+
+        def _alarm_handler(signum, frame):
+            raise _StatementTimeout(
+                f"Statement exceeded the {statement_timeout}s time limit"
+            )
+
+        has_alarm = hasattr(signal, "SIGALRM")
+        if has_alarm:
+            signal.signal(signal.SIGALRM, _alarm_handler)
+
+        def _push_with_timeout(line: str) -> bool:
+            if has_alarm:
+                signal.alarm(statement_timeout)
+            try:
+                return console.push(line)
+            except _StatementTimeout as e:
+                # This should normally be caught inside the user's own
+                # code if it wraps the offending statement in a
+                # try/except, since _StatementTimeout is a plain
+                # Exception subclass raised mid-execution. If it
+                # propagates all the way here, the statement had no
+                # such handler - report it and move on.
+                print(f"[bold red][TIMEOUT] {e}[/bold red]")
+                return False
+            finally:
+                if has_alarm:
+                    signal.alarm(0)
+
+        if not sys.stdin.isatty():
+            # Piped input: feed it line by line like a real terminal
+            # would, but on EOF, flush any statement still buffered
+            # in console.buffer by pushing one final blank line - this
+            # is what closes off the last block, which a trailing Enter
+            # does interactively but EOF alone doesn't.
+            print(banner)
+            for line in sys.stdin:
+                _push_with_timeout(line.rstrip("\n"))
+            if console.buffer:
+                _push_with_timeout("")
+            print("\nExiting Python REPL.")
+            return
+
         console.interact(banner=banner, exitmsg="Exiting Python REPL.")
 
     def pull(self) -> None:
