@@ -49,7 +49,7 @@ class Sandbox:
         )
         return out
 
-    def _final_answer(self, answer_string: str) -> None:
+    def _final_answer(self, answer: str) -> None:
         """
         Persist the agent's final answer to a fixed path so it
         can be retrieved after the sandboxed code finishes running.
@@ -58,7 +58,7 @@ class Sandbox:
         with open(
             "/tmp/agent/final_result.py", "w", encoding="utf-8"
         ) as f:
-            f.write(answer_string)
+            f.write(answer)
 
     def _restricted_builtins(self) -> dict:
         """
@@ -67,6 +67,8 @@ class Sandbox:
         exec/eval-related builtins).
         """
         import builtins
+        import json as json_module
+
         safe_builtins = {}
         allowed = [
             'abs', 'all', 'any', 'bin', 'bool', 'chr', 'dict', 'divmod',
@@ -76,11 +78,26 @@ class Sandbox:
             'range', 'repr', 'reversed', 'round', 'set', 'slice',
             'sorted', 'str', 'sum', 'tuple', 'type', 'zip', 'Exception',
             'ValueError', 'TypeError', 'AssertionError', 'IndexError',
-            'KeyError',
+            'KeyError', 'dir'
         ]
         for name in allowed:
             if hasattr(builtins, name):
                 safe_builtins[name] = getattr(builtins, name)
+
+        safe_builtins['json'] = json_module
+
+        ALLOWED_IMPORTS = {'json'}
+
+        def _safe_import(
+            name, globals=None, locals=None, fromlist=(), level=0
+        ):
+            if name not in ALLOWED_IMPORTS:
+                raise ImportError(
+                    f"import of '{name}' is not allowed in the sandbox"
+                )
+            return __import__(name, globals, locals, fromlist, level)
+
+        safe_builtins['__import__'] = _safe_import
         return safe_builtins
 
     def build_namespace(self) -> dict:
@@ -96,6 +113,8 @@ class Sandbox:
         }
         namespace.update(self.mcp_client.discover_tools())
         namespace["final_answer"] = self._final_answer
+        import json as json_module
+        namespace["json"] = json_module
         return namespace
 
     def _write_code_to_container(self, code: str, path: str) -> None:
@@ -190,12 +209,28 @@ class Sandbox:
 
         output = res.output.decode("utf-8", errors="replace")
 
+        # --- OUTPUT SIZE TRUNCATION CHECK ---
+        # Get max limit from config if available, otherwise
+        # default to 1,000,000 characters
+        max_chars = getattr(self.config, "max_output_chars", 1000000)
+        is_truncated = False
+        if len(output) > max_chars:
+            output = output[:max_chars]
+            is_truncated = True
+
         if res.exit_code == 124:
-            return (
-                f"{output}"
-                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
-                False,
+            warn_msg = (
+                f"{output}\n\n"
+                f"[TIMEOUT] Execution exceeded {timeout} seconds.\n"
+                "[PARTIAL OUTPUT] The execution hit the timeout. "
+                "The output above is partial."
             )
+            if is_truncated:
+                warn_msg += (
+                    "\n[TRUNCATED] The output also exceeded the "
+                    f"size limit of {max_chars} characters and was cut short."
+                )
+            return warn_msg, False
 
         if res.exit_code == 137 or "MemoryError" in output:
             return (
@@ -205,10 +240,13 @@ class Sandbox:
             )
 
         if res.exit_code != 0:
-            return (
-                f"[RUNTIME ERROR]\n{output}",
-                False,
-            )
+            warn_msg = f"[RUNTIME ERROR]\n{output}"
+            if is_truncated:
+                warn_msg += (
+                    "\n\n[TRUNCATED] Output was truncated "
+                    f"because it exceeded {max_chars} characters."
+                )
+            return warn_msg, False
 
         check = self.container.exec_run(
             "test -f /tmp/agent/final_result.py"
@@ -222,7 +260,20 @@ class Sandbox:
                 "utf-8", errors="replace"
             )
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
+            # Truncate final answer as well if it exceeds limits
+            if len(answer) > max_chars:
+                answer = (
+                    f"{answer[:max_chars]}\n\n"
+                    "[TRUNCATED] Final answer output was truncated "
+                    f"because it exceeded {max_chars} characters."
+                )
             return answer, True
+
+        if is_truncated:
+            output += (
+                "\n\n[TRUNCATED] Output was truncated "
+                f"because it exceeded {max_chars} characters."
+            )
 
         return output, False
 
@@ -263,7 +314,7 @@ class Sandbox:
         except Exception as e:
             raise e
 
-    def _start_mcp_client(self) -> None:
+    def _start_mcp_client(self, custom_command: str | None = None) -> None:
         """
         Launch the appropriate MCP tool server subprocess for
         this agent type, passing it the container id and config so
@@ -280,7 +331,26 @@ class Sandbox:
             self.eval_script.encode("utf-8")
         ).decode("ascii")
 
-        if self.agent == "MBPP":
+        # Se houver comando customizado passado pela CLI (mcp_command)
+        if custom_command:
+            import shlex
+            tokens = shlex.split(custom_command)
+            if not tokens:
+                raise ValueError("Custom MCP command cannot be empty")
+
+            # Resolve caminhos .py em relação à raiz
+            resolved = [
+                str(self._root_path / tok) if tok.endswith(".py") else tok
+                for tok in tokens
+            ]
+
+            self.mcp_client = MCPClient(
+                command=resolved[0],
+                args=resolved[1:],
+                env=server_env,
+            )
+        # Fallback para o comportamento padrão baseado no Benchmark
+        elif self.agent == "MBPP":
             self.mcp_client = MCPClient(
                 command="uv",
                 args=[
@@ -289,7 +359,6 @@ class Sandbox:
                 ],
                 env=server_env,
             )
-
         elif self.agent == "SWE_BENCH":
             self.mcp_client = MCPClient(
                 command="uv",
@@ -300,7 +369,7 @@ class Sandbox:
                 env=server_env,
             )
 
-    def start(self) -> None:
+    def start(self, custom_command: str | None = None) -> None:
         """
         Start the sandbox container (if not already running)
         with no network access and a memory cap, then start its
@@ -327,9 +396,78 @@ class Sandbox:
                         }
                     },
                 )
-                self._start_mcp_client()
+                self._start_mcp_client(custom_command=custom_command)
             except Exception as e:
                 raise e
+
+    """ def repl(self) -> None:
+        import sys
+        import code
+
+        if not self.container:
+            print("[bold red]Sandbox not running. Start it first.[/bold red]")
+            return
+
+        print(
+            "\n[bold green]=== Interactive Python Sandbox REPL ===[/bold green]"
+        )
+        print("Loading tools into your namespace...")
+
+        namespace = self.build_namespace()
+
+        if self.mcp_client:
+            print(self.mcp_client.generate_manual())
+
+        if not sys.stdin.isatty():
+            # Non-interactive: stdin is piped input (e.g. `cat file | ...`).
+            # Read it all and exec as a whole script, avoiding the
+            # InteractiveConsole's line-by-line block-closing issues.
+            source = sys.stdin.read()
+            try:
+                exec(compile(source, "<piped_input>", "exec"), namespace)
+            except Exception as e:
+                print(f"[bold red]Error: {e}[/bold red]")
+            print("\nExiting Python REPL.")
+            return
+
+        banner = (
+            "\nYou are inside the local agent namespace.\n"
+            "Type your Python code below. Example:\n"
+            ">>> result = run_tests()\n"
+            ">>> print(result)\n"
+            "Type exit() or quit() to leave."
+        )
+        console = code.InteractiveConsole(locals=namespace)
+        console.interact(banner=banner, exitmsg="Exiting Python REPL.") """
+
+    def repl(self) -> None:
+        import code
+        if not self.container:
+            print("[bold red]Sandbox not running. Start it first.[/bold red]")
+            return
+
+        print(
+            "\n[bold green]=== Interactive Python "
+            "Sandbox REPL ===[/bold green]"
+        )
+        print("Loading tools into your namespace...")
+
+        namespace = self.build_namespace()
+
+        if self.mcp_client:
+            print(self.mcp_client.generate_manual())
+
+        banner = (
+            "\n"
+            "You are inside the local agent namespace.\n"
+            "Type your Python code below. Example:\n"
+            ">>> result = run_tests()\n"
+            ">>> print(result)\n"
+            "Type exit() or quit() to leave."
+        )
+
+        console = code.InteractiveConsole(locals=namespace)
+        console.interact(banner=banner, exitmsg="Exiting Python REPL.")
 
     def pull(self) -> None:
         """
@@ -397,8 +535,8 @@ class Sandbox:
 
         Returns:
             A tuple of (output, exit_code). output has a
-            "[TIMEOUT]" or "[MEMORY LIMIT EXCEEDED]" note appended if
-            the command exceeded the configured limits.
+            "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]", or "[TRUNCATED]" note
+            appended if the command exceeded the configured limits.
         """
         effective_timeout = (
             timeout
@@ -420,21 +558,32 @@ class Sandbox:
             else ""
         )
 
+        # --- OUTPUT SIZE TRUNCATION CHECK ---
+        max_chars = getattr(self.config, "max_output_chars", 1000000)
+        is_truncated = False
+        if len(output) > max_chars:
+            output = output[:max_chars]
+            is_truncated = True
+
         if result.exit_code == 124:
             output += (
-                f"\n[TIMEOUT] Command exceeded "
-                f"{effective_timeout} seconds."
+                f"\n[TIMEOUT] Command exceeded {effective_timeout} seconds.\n"
+                "[PARTIAL OUTPUT] The command execution hit "
+                "the timeout; the output above is partial."
             )
         elif (
             result.exit_code == 137
             or "MemoryError" in output
         ):
-            # This now reflects the container's cgroup mem_limit
-            # killing the process (OOM), not a ulimit -v mapping
-            # failure — so it's a more accurate signal than before.
             output += (
                 "\n[MEMORY LIMIT EXCEEDED] "
                 f"Command exceeded {self.config.max_memory_mb} MB."
+            )
+
+        if is_truncated:
+            output += (
+                f"\n[TRUNCATED] Tool output was truncated because it exceeded "
+                f"the maximum limit of {max_chars} characters."
             )
 
         return output, result.exit_code

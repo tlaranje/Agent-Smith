@@ -2,6 +2,7 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from student.src.sandbox import Sandbox, SandboxConfig
+import json as json_module
 import os
 
 mcp = FastMCP("mbpp-tools")
@@ -89,44 +90,49 @@ def set_current_task_tests(test_list: list[str] | None = None) -> str:
 
 
 @mcp.tool()
-def run_tests(code: str | None = None) -> str:
+def run_tests(
+    code: str | None = None, test_list: list[str] | None = None
+) -> str:
     """
     Run submitted code against the current task's tests inside
     the sandbox.
 
+    Success is determined by whether the code executed cleanly
+    (no assertion failure, runtime error, timeout, or memory
+    limit violation) — it does not require final_answer() to
+    have been called.
+
     Args:
         code: The Python solution code to execute.
+        test_list: Optional list of assert statements to run
+            against the submitted solution. If omitted, falls
+            back to the tests configured via set_current_task_tests.
 
     Returns:
-        A success message with sandbox output if all tests pass,
-        or a failure/error message otherwise.
+        A JSON string with "success" (bool) and "output" (str)
+        fields describing the result of the execution.
     """
     if code is None:
-        return "ERROR: code is required."
-
+        return json_module.dumps(
+            {"success": False, "output": "ERROR: code is required."}
+        )
     if not sandbox:
-        return "ERROR: No active sandbox container session found."
+        return json_module.dumps({
+            "success": False,
+            "output": "ERROR: No active sandbox container session found."
+        })
 
-    if not current_task_tests:
-        return (
-            "Error: No active task. Call set_current_task_tests "
-            "first to load the tests."
-        )
+    tests_to_run = test_list if test_list is not None else current_task_tests
+    output, final_answer_called = sandbox.execute(code, test_list=tests_to_run)
 
-    output, success = sandbox.execute(code, test_list=current_task_tests)
+    ran_cleanly = not output.startswith((
+        "[RUNTIME ERROR]", "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]"
+    ))
 
-    if success:
-        return (
-            f"SUCCESS: All tests passed successfully!\n\n"
-            f"The solution code is valid.\n"
-            f"Sandbox Output:\n{output}"
-        )
-    else:
-        return (
-            f"FAILURE: The code execution or a test assertion failed.\n"
-            f"Analyze the error logs below to fix your implementation:\n\n"
-            f"--- ERROR LOGS ---\n{output}"
-        )
+    return json_module.dumps({
+        "success": ran_cleanly,
+        "output": output,
+    })
 
 
 if __name__ == "__main__":

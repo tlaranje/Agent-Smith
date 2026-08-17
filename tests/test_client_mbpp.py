@@ -46,7 +46,11 @@ async def main():
 
                 # Run a correct sample solution through run_tests
                 # to confirm the tool call round-trips correctly.
-                code = "def soma(a, b):\n    return a + b\n"
+                code = (
+                    "def soma(a, b):\n"
+                    "    return a + b\n\n"
+                    "final_answer('Sucesso remoto!')\n"
+                )
                 result = await session.call_tool("run_tests", {"code": code})
                 print("run_tests:", result)
 
