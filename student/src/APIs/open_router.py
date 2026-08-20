@@ -12,10 +12,16 @@ class OpenRouterAPI:
         self.api_key = api_key
         self.model_name = model_name
         self.api_url = api_url
-        self.client = OpenAI(api_key=api_key, base_url=api_url)
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=api_url,
+            timeout=8.0,
+            max_retries=0,
+        )
 
     def generate_messages(
-        self, messages: list[ChatCompletionMessageParam]
+        self, messages: list[ChatCompletionMessageParam],
+        max_output_tokens: int = 700,
     ) -> Any:
         """
         Send messages to the OpenRouter chat API (OpenAI-
@@ -34,6 +40,7 @@ class OpenRouterAPI:
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
+            max_tokens=max_output_tokens,
         )
 
         usage = response.usage

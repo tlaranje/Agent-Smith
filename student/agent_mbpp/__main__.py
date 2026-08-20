@@ -4,6 +4,7 @@ from src.agent import MBPPAgent
 from src.APIs import get_llms
 from pathlib import Path
 import argparse
+import json
 
 
 def main() -> None:
@@ -40,14 +41,39 @@ def main() -> None:
     sandbox.build("..")
     sandbox.start()
 
-    agent: MBPPAgent = MBPPAgent(
-        sandbox, get_llms(args.model_name, args.provider_url)
-    )
-    solution = agent.solve(task)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, "w") as fd:
-        fd.write(solution.model_dump_json(indent=4))
+    try:
+        agent: MBPPAgent = MBPPAgent(
+            sandbox, get_llms(args.model_name, args.provider_url)
+        )
+        solution = agent.solve(task)
+        output_data = solution.model_dump_json(indent=4)
+    except Exception as e:
+        # Always emit schema-valid JSON after an API timeout or provider
+        # failure, so the exam can report execution failure accurately.
+        output_data = json.dumps({
+            "task_id": str(task.task_id),
+            "benchmark": "mbpp",
+            "success": False,
+            "solution": "",
+            "system_prompt": "",
+            "iterations": 0,
+            "total_requests": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_time_seconds": 0.0,
+            "steps": [],
+            "error": str(e),
+        }, indent=4)
+    finally:
+        try:
+            sandbox.stop()
+        except Exception:
+            pass
+
+    with open(output_path, "w") as fd:
+        fd.write(output_data)
 
 
 if __name__ == "__main__":

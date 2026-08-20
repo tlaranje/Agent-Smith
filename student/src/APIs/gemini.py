@@ -13,10 +13,13 @@ class GeminiAPI:
         self.model_name = model_name
         self.api_url = api_url
         self.client = genai.Client(
-            api_key=api_key, http_options=HttpOptions(base_url=api_url)
+            api_key=api_key,
+            http_options=HttpOptions(base_url=api_url, timeout=8000),
         )
 
-    def generate_messages(self, messages: list[dict]) -> Any:
+    def generate_messages(
+        self, messages: list[dict], max_output_tokens: int = 700
+    ) -> Any:
         """
         Send messages to the Gemini API and wrap the result in
         a common LLMResponse.
@@ -48,11 +51,11 @@ class GeminiAPI:
         try:
             from google.genai.types import ThinkingConfig
             config = GenerateContentConfig(
-                max_output_tokens=4096,
+                max_output_tokens=max_output_tokens,
                 thinking_config=ThinkingConfig(thinking_budget=0),
             )
         except (ImportError, TypeError):
-            config = GenerateContentConfig(max_output_tokens=4096)
+            config = GenerateContentConfig(max_output_tokens=max_output_tokens)
 
         response = self.client.models.generate_content(
             model=self.model_name,

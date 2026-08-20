@@ -11,10 +11,16 @@ class GroqAPI:
         self.api_key = api_key
         self.model_name = model_name
         self.api_url = api_url
-        self.client = Groq(api_key=api_key, base_url=api_url)
+        self.client = Groq(
+            api_key=api_key,
+            base_url=api_url,
+            timeout=8.0,
+            max_retries=0,
+        )
 
     def generate_messages(
-        self, messages: list[ChatCompletionMessageParam]
+        self, messages: list[ChatCompletionMessageParam],
+        max_output_tokens: int = 700,
     ) -> Any:
         """
         Send messages to the Groq chat API and wrap the result
@@ -33,6 +39,7 @@ class GroqAPI:
         chat_completion = self.client.chat.completions.create(
             messages=messages,
             model=self.model_name,
+            max_tokens=max_output_tokens,
         )
 
         usage = chat_completion.usage

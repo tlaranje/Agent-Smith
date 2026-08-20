@@ -14,9 +14,16 @@ class CerebrasAPI:
         self.model_name = model_name
         self.api_url = api_url
 
-        self.client = Cerebras(api_key=api_key, base_url=api_url)
+        self.client = Cerebras(
+            api_key=api_key,
+            base_url=api_url,
+            timeout=8.0,
+            max_retries=0,
+        )
 
-    def generate_messages(self, messages: list[dict[str, str]]) -> Any:
+    def generate_messages(
+        self, messages: list[dict[str, str]], max_output_tokens: int = 700
+    ) -> Any:
         """
         Send messages to the Cerebras chat API and wrap the
         result in a common LLMResponse.
@@ -37,6 +44,7 @@ class CerebrasAPI:
                 model=self.model_name,
                 messages=cast(list[dict[str, object]], messages),
                 stream=False,
+                max_tokens=max_output_tokens,
             )
         )
 

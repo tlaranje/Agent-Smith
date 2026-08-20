@@ -24,9 +24,15 @@ class CohereAPI:
         self.api_key = api_key
         self.model_name = model_name
         self.api_url: str = api_url
-        self.client = cohere.ClientV2(api_key=api_key, base_url=api_url)
+        self.client = cohere.ClientV2(
+            api_key=api_key,
+            base_url=api_url,
+            timeout=8.0,
+        )
 
-    def generate_messages(self, messages: list[ChatMessage]) -> Any:
+    def generate_messages(
+        self, messages: list[ChatMessage], max_output_tokens: int = 700
+    ) -> Any:
         """
         Send messages to the Cohere chat API and wrap the
         result in a common LLMResponse.
@@ -44,6 +50,7 @@ class CohereAPI:
         response = self.client.chat(
             model=self.model_name,
             messages=messages,
+            max_tokens=max_output_tokens,
         )
 
         content = response.message.content

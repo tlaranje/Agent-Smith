@@ -13,30 +13,13 @@ RED = "\033[91m"
 YELLOW = "\033[93m"
 END = "\033[0m"
 
-SYSTEM_PROMPT = """
-You are an expert Python programmer.
+SYSTEM_PROMPT = """Solve the MBPP task with the exact requested function signature.
+Return only short executable Python code: no explanation, docstring, repeated
+tests, or alternative solutions. After the implementation passes, call
+final_answer("<the clean function code>")."""
 
-You solve one programming task at a time.
-
-Requirements:
-
-- Produce correct Python code implementing the requested function.
-- Follow the requested function signature exactly.
-- Do not import unavailable modules.
-- Do not access resources outside the sandbox.
-- Return only executable Python code. Do not call any tools yourself
-  and do not include markdown or explanations -- your code will be
-  tested and submitted automatically.
-- Once you are confident your solution is correct, call
-  final_answer("your complete clean function code here") as the last
-  line of your code. The argument to final_answer MUST be the
-  function's source code as a string (e.g. the def statement and
-  its body), NOT the result of calling the function. Automated
-  tests are appended after your code and run against the function
-  you define -- final_answer only records your final solution, it
-  does not need to be called with the correct output for tests to
-  pass.
-"""
+MAX_MBPP_OUTPUT_TOKENS = 1500
+MAX_RESPONSE_TOKENS = 700
 
 
 def short_error(e: Exception, max_len: int = 150) -> str:
@@ -183,7 +166,17 @@ class MBPPAgent:
                 while True:
                     try:
                         request_start = time.time()
-                        response = self.llm.generate_messages(messages)
+                        remaining_output = (
+                            MAX_MBPP_OUTPUT_TOKENS - total_output_tokens
+                        )
+                        if remaining_output <= 0:
+                            raise RuntimeError("MBPP output token budget exhausted")
+                        response = self.llm.generate_messages(
+                            messages,
+                            max_output_tokens=min(
+                                MAX_RESPONSE_TOKENS, remaining_output
+                            ),
+                        )
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
@@ -195,7 +188,7 @@ class MBPPAgent:
                             f"{short_error(e)}{END}",
                             file=sys.stderr,
                         )
-                        if retries > 50:
+                        if retries >= len(self.llms):
                             raise RuntimeError(
                                 "All LLM providers/keys failed after "
                                 f"{retries} retries. Last error: {e}"
@@ -212,9 +205,14 @@ class MBPPAgent:
                 sandbox_output = self.sandbox.mcp_client.call_tool(
                     "run_tests", code=code
                 )
-                done = (
-                    "SUCCESS: All tests passed successfully!" in sandbox_output
-                )
+                try:
+                    test_result = json.loads(sandbox_output)
+                except json.JSONDecodeError:
+                    test_result = {
+                        "success": False,
+                        "output": sandbox_output,
+                    }
+                done = bool(test_result.get("success", False))
 
                 steps.append(StepMetrics(
                     step=iteration + 1,
@@ -235,7 +233,7 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        solution=code,
+                        solution=str(test_result.get("output") or code),
                         system_prompt=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
@@ -244,18 +242,18 @@ class MBPPAgent:
                         total_time_seconds=time.time() - start_time,
                         steps=steps,
                     )
-                messages.append({
-                    "role": "assistant",
-                    "content": response.content or (
-                        "(empty response from the model)"
-                    ),
-                })
-                messages.append({
+                # Do not resend the growing conversation. The next request
+                # only needs the task and the latest execution observation.
+                messages = [{
                     "role": "user",
-                    "content": self._format_observation(
-                        sandbox_output, iteration
-                    )
-                })
+                    "content": (
+                        f"Task: {task.task_definition}\n"
+                        f"Signature: {task.function_definition}\n"
+                        f"Previous code:\n{code}\n"
+                        f"Latest result:\n{sandbox_output}\n"
+                        "Return only the corrected code."
+                    ),
+                }]
         finally:
             self.sandbox.stop()
 

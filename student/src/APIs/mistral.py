@@ -19,10 +19,15 @@ class MistralAPI:
         self.api_key: str = api_key
         self.model_name: str = model_name
         self.api_url: str = api_url
-        self.client: Mistral = Mistral(api_key=api_key, server_url=api_url)
+        self.client: Mistral = Mistral(
+            api_key=api_key,
+            server_url=api_url,
+            timeout_ms=8000,
+        )
 
     def generate_messages(
-        self, messages: List[Message], max_retries: int = 5
+        self, messages: List[Message], max_output_tokens: int = 700,
+        max_retries: int = 1
     ) -> Any:
         """
         Send messages to the Mistral chat API, retrying with
@@ -55,6 +60,7 @@ class MistralAPI:
                 response = self.client.chat.complete(
                     model=self.model_name,
                     messages=messages,
+                    max_tokens=max_output_tokens,
                 )
 
                 usage = response.usage
