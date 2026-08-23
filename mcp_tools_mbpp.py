@@ -125,8 +125,14 @@ def run_tests(
     tests_to_run = test_list if test_list is not None else current_task_tests
     output, final_answer_called = sandbox.execute(code, test_list=tests_to_run)
 
+    # Treat runtime errors, timeouts, memory exceeded, and explicit
+    # sandbox validation rejections as failures. Previously the
+    # "Code rejected: ..." message could be mis-classified as a
+    # success because it doesn't start with the runtime error
+    # prefixes; ensure it's treated as a failure here.
     ran_cleanly = not output.startswith((
-        "[RUNTIME ERROR]", "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]"
+        "[RUNTIME ERROR]", "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]",
+        "Code rejected:"
     ))
 
     return json_module.dumps({

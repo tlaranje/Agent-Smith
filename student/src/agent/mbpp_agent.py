@@ -157,7 +157,9 @@ class MBPPAgent:
                 "content": prompt,
             }
         ]
-
+        # Run the LLM interaction loop but capture and return partial
+        # progress on failure so callers always get a populated JSON
+        # report (with success=False) instead of an empty result.
         try:
             for iteration in range(self.max_iterations):
                 retries = 0
@@ -170,7 +172,22 @@ class MBPPAgent:
                             MAX_MBPP_OUTPUT_TOKENS - total_output_tokens
                         )
                         if remaining_output <= 0:
-                            raise RuntimeError("MBPP output token budget exhausted")
+                            # Return structured failure with collected
+                            # steps so far instead of raising.
+                            return SolutionOutput(
+                                task_id=str(task.task_id),
+                                benchmark="mbpp",
+                                success=False,
+                                solution="",
+                                system_prompt=prompt,
+                                iterations=iteration,
+                                total_requests=total_requests,
+                                total_input_tokens=total_input_tokens,
+                                total_output_tokens=total_output_tokens,
+                                total_time_seconds=time.time() - start_time,
+                                steps=steps,
+                                error="MBPP output token budget exhausted",
+                            )
                         response = self.llm.generate_messages(
                             messages,
                             max_output_tokens=min(
@@ -254,8 +271,31 @@ class MBPPAgent:
                         "Return only the corrected code."
                     ),
                 }]
+        except Exception as e:
+            # Stop sandbox and return partial SolutionOutput with error
+            try:
+                self.sandbox.stop()
+            except Exception:
+                pass
+            return SolutionOutput(
+                task_id=str(task.task_id),
+                benchmark="mbpp",
+                success=False,
+                solution="",
+                system_prompt=prompt if 'prompt' in locals() else "",
+                iterations=iteration if 'iteration' in locals() else 0,
+                total_requests=total_requests,
+                total_input_tokens=total_input_tokens,
+                total_output_tokens=total_output_tokens,
+                total_time_seconds=time.time() - start_time,
+                steps=steps,
+                error=str(e),
+            )
         finally:
-            self.sandbox.stop()
+            try:
+                self.sandbox.stop()
+            except Exception:
+                pass
 
         return SolutionOutput(
             task_id=str(task.task_id),
