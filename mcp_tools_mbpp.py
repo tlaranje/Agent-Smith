@@ -91,46 +91,52 @@ def set_current_task_tests(test_list: list[str] | None = None) -> str:
 
 @mcp.tool()
 def run_tests(
-    code: str | None = None, test_list: list[str] | None = None
+    code: str | None = None,
+    test_list: list[str] | None = None,
 ) -> str:
     """
-    Run submitted code against the current task's tests inside
-    the sandbox.
+    Run submitted code against the current task's tests.
 
-    Success is determined by whether the code executed cleanly
-    (no assertion failure, runtime error, timeout, or memory
-    limit violation) — it does not require final_answer() to
-    have been called.
-
-    Args:
-        code: The Python solution code to execute.
-        test_list: Optional list of assert statements to run
-            against the submitted solution. If omitted, falls
-            back to the tests configured via set_current_task_tests.
-
-    Returns:
-        A JSON string with "success" (bool) and "output" (str)
-        fields describing the result of the execution.
+    Returns JSON with:
+      - success: True only if all tests pass cleanly
+      - output: execution/test output
     """
     if code is None:
-        return json_module.dumps(
-            {"success": False, "output": "ERROR: code is required."}
-        )
+        return json_module.dumps({
+            "success": False,
+            "output": "ERROR: code is required.",
+        })
+
     if not sandbox:
         return json_module.dumps({
             "success": False,
-            "output": "ERROR: No active sandbox container session found."
+            "output": "ERROR: No active sandbox container session found.",
         })
 
-    tests_to_run = test_list if test_list is not None else current_task_tests
-    output, final_answer_called = sandbox.execute(code, test_list=tests_to_run)
+    tests_to_run = (
+        test_list
+        if test_list is not None
+        else current_task_tests
+    )
 
-    ran_cleanly = not output.startswith((
-        "[RUNTIME ERROR]", "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]"
-    ))
+    output, final_answer_called = sandbox.execute(
+        code,
+        test_list=tests_to_run,
+    )
+
+    # Any execution/test failure means success=False.
+    failure_prefixes = (
+        "[RUNTIME ERROR]",
+        "[TIMEOUT]",
+        "[MEMORY LIMIT EXCEEDED]",
+        "[ASSERTION ERROR]",
+        "[TEST FAILED]",
+    )
+
+    success = not output.startswith(failure_prefixes)
 
     return json_module.dumps({
-        "success": ran_cleanly,
+        "success": success,
         "output": output,
     })
 

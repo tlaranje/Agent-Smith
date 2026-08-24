@@ -10,6 +10,10 @@ import docker
 import shlex
 import io
 import os
+import resource
+import signal
+import code
+import sys
 
 
 class Sandbox:
@@ -62,9 +66,11 @@ class Sandbox:
 
     def _restricted_builtins(self) -> dict:
         """
-        Build a minimal, safe subset of __builtins__ for use as
-        the namespace of sandboxed code (no I/O, no import, no
-        exec/eval-related builtins).
+        Build a minimal, safe subset of __builtins__ for use as the
+        namespace of sandboxed code. Import and file-path access are
+        both driven dynamically by self.config, instead of being
+        hardcoded, so the sandbox stays configurable via JSON/Pydantic
+        as required.
         """
         import builtins
         import json as json_module
@@ -78,22 +84,22 @@ class Sandbox:
             'range', 'repr', 'reversed', 'round', 'set', 'slice',
             'sorted', 'str', 'sum', 'tuple', 'type', 'zip', 'Exception',
             'ValueError', 'TypeError', 'AssertionError', 'IndexError',
-            'KeyError', 'dir'
+            'KeyError', 'PermissionError', 'ImportError', 'dir',
         ]
         for name in allowed:
             if hasattr(builtins, name):
                 safe_builtins[name] = getattr(builtins, name)
 
         safe_builtins['json'] = json_module
-
-        ALLOWED_IMPORTS = {'json'}
+        safe_builtins['open'] = self._make_restricted_open()
 
         def _safe_import(
             name, globals=None, locals=None, fromlist=(), level=0
         ):
-            if name not in ALLOWED_IMPORTS:
+            if not self._is_import_allowed(name):
                 raise ImportError(
-                    f"import of '{name}' is not allowed in the sandbox"
+                    f"import of '{name}' is not allowed in the sandbox. "
+                    f"Authorized imports: {self.config.authorized_imports}"
                 )
             return __import__(name, globals, locals, fromlist, level)
 
@@ -103,8 +109,8 @@ class Sandbox:
     def build_namespace(self) -> dict:
         """
         Build the execution namespace exposed to sandboxed code:
-        restricted builtins, the MCP tools as callables, and
-        final_answer.
+        restricted builtins (import/filesystem allowlists driven by
+        self.config), the MCP tools as callables, and final_answer.
         """
         if self.mcp_client is None:
             return {}
@@ -113,9 +119,25 @@ class Sandbox:
         }
         namespace.update(self.mcp_client.discover_tools())
         namespace["final_answer"] = self._final_answer
-        import json as json_module
-        namespace["json"] = json_module
         return namespace
+
+    def _apply_memory_limit(self) -> None:
+        """
+        Cap the REPL process's virtual memory to
+        config.max_memory_mb, so runaway allocations inside the
+        interactive session hit MemoryError instead of consuming
+        the host. Best-effort: silently skipped on platforms
+        (e.g. Windows) where RLIMIT_AS isn't supported.
+        """
+        try:
+            limit_bytes = self.config.max_memory_mb * 1024 * 1024
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            new_hard = hard if hard != resource.RLIM_INFINITY else limit_bytes
+            resource.setrlimit(
+                resource.RLIMIT_AS, (limit_bytes, max(limit_bytes, new_hard))
+            )
+        except (ValueError, OSError, AttributeError):
+            pass
 
     def _write_code_to_container(self, code: str, path: str) -> None:
         """
@@ -406,41 +428,99 @@ class Sandbox:
             except Exception as e:
                 raise e
 
+    def _is_import_allowed(self, m_name: str) -> bool:
+        """
+        Check `m_name` against self.config.authorized_imports.
+
+        Supports exact matches ("math") and wildcard entries
+        ("collections.*") which also permit the bare module and any
+        of its submodules.
+        """
+        allowed = self.config.authorized_imports
+        for pattern in allowed:
+            if pattern.endswith(".*"):
+                root = pattern[:-2]
+                if m_name == root or m_name.startswith(root + "."):
+                    return True
+            elif m_name == pattern:
+                return True
+        return False
+
+    def _is_path_allowed(self, path: str) -> bool:
+        """
+        Check `path` against self.config.allowed_directories.
+
+        Resolves the path (following symlinks where possible) so
+        that traversal tricks like '../../etc/passwd' can't escape
+        the allowlist.
+        """
+        try:
+            resolved = os.path.realpath(path)
+        except OSError:
+            resolved = os.path.abspath(path)
+
+        for allowed_dir in self.config.allowed_directories:
+            allowed_resolved = os.path.realpath(allowed_dir)
+            if (
+                resolved == allowed_resolved
+                or resolved.startswith(allowed_resolved + os.sep)
+            ):
+                return True
+        return False
+
+    def _make_restricted_open(self):
+        """
+        Build a replacement for the `open` builtin that only allows
+        access to paths inside self.config.allowed_directories.
+        """
+        import builtins as _builtins
+        _real_open = _builtins.open
+
+        def _restricted_open(file, mode="r", *args, **kwargs):
+            path = file if isinstance(file, (str, os.PathLike)) else None
+            if path is not None and not self._is_path_allowed(str(path)):
+                raise PermissionError(
+                    f"Access to path '{path}' is not allowed in the "
+                    f"sandbox. Allowed directories: "
+                    f"{self.config.allowed_directories}"
+                )
+            return _real_open(file, mode, *args, **kwargs)
+
+        return _restricted_open
+
     def repl(self) -> None:
         """
         Launches an interactive Python REPL session pre-populated
-        with the MCP tools in its local namespace.
+        with the MCP tools in its local namespace, subject to the
+        same import, filesystem, timeout, and memory restrictions
+        as sandboxed code executed via execute().
 
         If stdin is a TTY, runs a normal interactive console. If
-        stdin is piped (e.g. `cat file | uv run sandbox ...`, as
-        used by automated test harnesses), feeds each line to the
-        console exactly as interactive input would, but afterwards
-        explicitly flushes any statement still buffered by the
-        console (its "last block") instead of silently discarding
-        it.
+        stdin is piped, feeds each line to the console exactly as
+        interactive input would, flushing any buffered "last block"
+        on EOF.
 
         Each pushed statement is wall-clock bounded by
-        config.max_execution_time_seconds via SIGALRM, so that a
-        long-running or infinite-looping statement typed (or piped)
-        into the REPL is interrupted with a catchable exception
-        instead of hanging the process indefinitely.
+        config.max_execution_time_seconds via SIGALRM.
+        KeyboardInterrupt and SystemExit are never caught here -
+        they propagate naturally out of console.push()/interact(),
+        as required for proper shutdown.
         """
-        import sys
-        import code
-        import signal
-
         if not self.container:
             print("[bold red]Sandbox not running. Start it first.[/bold red]")
             return
 
-        namespace = self.build_namespace()
+        # Enforce the configured memory ceiling on this REPL process
+        # itself (best-effort), mirroring the ulimit used by execute().
+        self._apply_memory_limit()
 
-        # if self.mcp_client:
-        #     print(self.mcp_client.generate_manual())
+        namespace = self.build_namespace()
 
         banner = (
             "\n"
             "You are inside the local agent namespace.\n"
+            f"Authorized imports: {self.config.authorized_imports}\n"
+            f"Allowed directories: {self.config.allowed_directories}\n"
             "Type your Python code below. Example:\n"
             ">>> result = run_tests()\n"
             ">>> print(result)\n"
@@ -464,29 +544,33 @@ class Sandbox:
             signal.signal(signal.SIGALRM, _alarm_handler)
 
         def _push_with_timeout(line: str) -> bool:
+            """
+            Push one line into the console, applying the same
+            timeout/memory boundaries as sandboxed execution.
+            Import and filesystem restrictions are enforced inside
+            the namespace itself (via __import__/open overrides),
+            so malformed/disallowed statements surface as normal
+            Python exceptions the console already prints - the LLM
+            (or user) is never left guessing what happened.
+            """
             if has_alarm:
                 signal.alarm(statement_timeout)
             try:
                 return console.push(line)
             except _StatementTimeout as e:
-                # This should normally be caught inside the user's own
-                # code if it wraps the offending statement in a
-                # try/except, since _StatementTimeout is a plain
-                # Exception subclass raised mid-execution. If it
-                # propagates all the way here, the statement had no
-                # such handler - report it and move on.
                 print(f"[bold red][TIMEOUT] {e}[/bold red]")
+                return False
+            except MemoryError:
+                print(
+                    f"[bold red][MEMORY LIMIT EXCEEDED] Statement "
+                    f"exceeded {self.config.max_memory_mb} MB.[/bold red]"
+                )
                 return False
             finally:
                 if has_alarm:
                     signal.alarm(0)
 
         if not sys.stdin.isatty():
-            # Piped input: feed it line by line like a real terminal
-            # would, but on EOF, flush any statement still buffered
-            # in console.buffer by pushing one final blank line - this
-            # is what closes off the last block, which a trailing Enter
-            # does interactively but EOF alone doesn't.
             print(banner)
             for line in sys.stdin:
                 _push_with_timeout(line.rstrip("\n"))

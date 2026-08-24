@@ -9,6 +9,10 @@ import re
 mcp = FastMCP("swe-bench-tools")
 
 
+def _get_testbed_path() -> str:
+    return os.environ.get("TESTBED_PATH", "/testbed")
+
+
 def _load_config() -> SandboxConfig:
     """
     Load a SandboxConfig from the SANDBOX_CONFIG_JSON env var,
@@ -35,12 +39,21 @@ def _attach(container_id: str, eval_script: str = "") -> Sandbox:
         directory.
     """
     instance = Sandbox.attach(
-        "SWE_BENCH", container_id=container_id, config=_load_config()
+        "SWE_BENCH",
+        container_id=container_id,
+        config=_load_config(),
     )
+
     instance.eval_script = eval_script or base64.b64decode(
         os.environ.get("EVAL_SCRIPT_B64", "")
     ).decode("utf-8")
-    instance._exec("git config --global --add safe.directory /testbed")
+
+    testbed_path = _get_testbed_path()
+
+    instance._exec(
+        f"git config --global --add safe.directory '{testbed_path}'"
+    )
+
     return instance
 
 
@@ -226,7 +239,13 @@ def search_code(pattern: str, file_pattern: str = "*.py") -> str:
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    cmd = f"grep -rn --include='{file_pattern}' '{pattern}' /testbed"
+    testbed_path = _get_testbed_path()
+
+    cmd = (
+        f"grep -rn --include='{file_pattern}' "
+        f"'{pattern}' '{testbed_path}'"
+    )
+
     out, _ = sandbox._exec(cmd)
     return out or "No matches found."
 
@@ -250,7 +269,13 @@ def search_function_or_class_definition_in_code(name: str) -> str:
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    cmd = f"grep -rn --include='*.py' -E '^(def {name}|class {name})' /testbed"
+    testbed_path = _get_testbed_path()
+
+    cmd = (
+        f"grep -rn --include='*.py' "
+        f"-E '^(def {name}|class {name})' "
+        f"'{testbed_path}'"
+    )
     out, _ = sandbox._exec(cmd)
     if not out:
         cmd = (
@@ -315,7 +340,13 @@ def run_command(command: str, workdir: str = "/testbed") -> str:
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    out, code = sandbox._exec(f"cd {workdir} && {command}")
+    if workdir is None:
+        workdir = _get_testbed_path()
+
+    out, code = sandbox._exec(
+        f"cd '{workdir}' && {command}"
+    )
+
     return f"Exit code: {code}\nOutput:\n{out}"
 
 
