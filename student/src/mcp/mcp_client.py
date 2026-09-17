@@ -31,7 +31,7 @@ class MCPClient:
         self._queue: asyncio.Queue = asyncio.run_coroutine_threadsafe(
             self._make_queue(), self._loop
         ).result()
-
+          
         self._ready = threading.Event()
         self._worker_future = asyncio.run_coroutine_threadsafe(
             self._worker(), self._loop
@@ -179,8 +179,7 @@ class MCPClient:
         if name not in allowed_tools_name:
             return (
                 f"ERROR:\nUnknown tool name: '{name}'\n\n"
-                f"Available tools:\n"
-                + "\n".join(f"- {t}" for t in allowed_tools_name)
+                f"Available tools:\n" + "\n".join(f"- {t}" for t in allowed_tools_name)
             )
         try:
             return self._submit(self._call_tool_async(name, **kwargs))

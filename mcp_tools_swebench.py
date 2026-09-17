@@ -40,8 +40,11 @@ def _attach(container_id: str, eval_script: str = "") -> Sandbox:
         directory.
     """
     instance = Sandbox.attach(
-        "SWE_BENCH", container_id=container_id, config=_load_config()
+        "SWE_BENCH",
+        container_id=container_id,
+        config=_load_config(),
     )
+
     instance.eval_script = eval_script or base64.b64decode(
         os.environ.get("EVAL_SCRIPT_B64", "")
     ).decode("utf-8")
