@@ -38,11 +38,15 @@ class LocalAPI:
             return
 
         try:
-            from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+            from transformers import (
+                AutoTokenizer, AutoModelForCausalLM, pipeline
+            )
             import torch
+            _ = torch
         except Exception as e:  # pragma: no cover - optional dependency
             raise RuntimeError(
-                "Local models require the 'transformers' and 'torch' packages. "
+                "Local models require the 'transformers' "
+                "and 'torch' packages. "
                 f"Import failed: {e}"
             )
 
@@ -124,7 +128,7 @@ class LocalAPI:
         generated_text = result[0].get("generated_text", "")
         content = generated_text
         if generated_text.startswith(prompt):
-            content = generated_text[len(prompt) :].lstrip("\n")
+            content = generated_text[len(prompt):].lstrip("\n")
 
         # Token accounting using tokenizer
         total_ids = self._tokenizer(generated_text).get("input_ids", [])

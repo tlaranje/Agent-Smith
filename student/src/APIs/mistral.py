@@ -22,7 +22,7 @@ class MistralAPI:
         self.client: Mistral = Mistral(
             api_key=api_key,
             server_url=api_url,
-            timeout_ms=8000,
+            timeout_ms=60000,
         )
 
     def generate_messages(

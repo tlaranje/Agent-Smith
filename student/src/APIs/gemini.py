@@ -14,7 +14,7 @@ class GeminiAPI:
         self.api_url = api_url
         self.client = genai.Client(
             api_key=api_key,
-            http_options=HttpOptions(base_url=api_url, timeout=8000),
+            http_options=HttpOptions(base_url=api_url, timeout=60000),
         )
 
     def generate_messages(

@@ -13,9 +13,10 @@ RED = "\033[91m"
 YELLOW = "\033[93m"
 END = "\033[0m"
 
-SYSTEM_PROMPT = """Solve the MBPP task with the exact requested function signature.
-Return only short executable Python code: no explanation, docstring, repeated
-tests, or alternative solutions. After the implementation passes, call
+SYSTEM_PROMPT = """Solve the MBPP task with the exact requested
+function signature. Return only short executable Python code: no
+explanation, docstring, repeated tests, or alternative solutions.
+After the implementation passes, call
 final_answer("<the clean function code>")."""
 
 MAX_MBPP_OUTPUT_TOKENS = 1500

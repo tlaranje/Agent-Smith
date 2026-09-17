@@ -113,30 +113,141 @@ class MCPClient:
             return content.text
         return ""
 
+    async def _read_resource_async(self, name: str, /, **kwargs: Any) -> str:
+        assert self._session is not None
+
+        resources = (await self._session.list_resources()).resources
+        resource = next(
+            (item for item in resources if item.name == name), None
+        )
+        if resource is None:
+            raise ValueError(f"Unknown resource name: '{name}'")
+
+        return await self._resource_result_text(
+            await self._session.read_resource(resource.uri)
+        )
+
+    async def _read_resource_template_async(
+        self, uri_template: str, /, **kwargs: Any
+    ) -> str:
+        assert self._session is not None
+        try:
+            uri = uri_template.format(**kwargs)
+        except KeyError as error:
+            raise ValueError(
+                f"Missing resource argument: '{error.args[0]}'"
+            ) from error
+
+        return await self._resource_result_text(
+            await self._session.read_resource(uri)
+        )
+
+    @staticmethod
+    async def _resource_result_text(result: Any) -> str:
+        if not result.contents:
+            return ""
+
+        content = result.contents[0]
+        if hasattr(content, "text"):
+            return str(content.text)
+        if hasattr(content, "blob"):
+            return str(content.blob)
+        return str(content)
+
+    async def _get_prompt_async(self, name: str, /, **kwargs: Any) -> str:
+        assert self._session is not None
+
+        prompts = (await self._session.list_prompts()).prompts
+        prompt = next((item for item in prompts if item.name == name), None)
+        if prompt is None:
+            raise ValueError(f"Unknown prompt name: '{name}'")
+
+        result = await self._session.get_prompt(name, arguments=kwargs)
+        parts: list[str] = []
+        for message in result.messages:
+            content = message.content
+            if isinstance(content, TextContent):
+                parts.append(content.text)
+            elif hasattr(content, "text"):
+                parts.append(str(content.text))
+            elif hasattr(content, "uri"):
+                parts.append(str(content.uri))
+        return "\n".join(parts)
+
     def call_tool(self, name: str, /, **kwargs: Any) -> str:
         allowed_tools_name = [t.name for t in self.list_tools()]
         if name not in allowed_tools_name:
             return (
                 f"ERROR:\nUnknown tool name: '{name}'\n\n"
-                f"Available tools:\n" + "\n".join(f"- {t}" for t in allowed_tools_name)
+                f"Available tools:\n"
+                + "\n".join(f"- {t}" for t in allowed_tools_name)
             )
         try:
             return self._submit(self._call_tool_async(name, **kwargs))
         except TypeError as e:
-            return f"ERROR:\nInvalid arguments for tool '{name}'.\nDetails: {str(e)}\nReceived args: {kwargs}"
+            return (
+                f"ERROR:\nInvalid arguments for tool '{name}'.\n"
+                f"Details: {str(e)}\nReceived args: {kwargs}"
+            )
         except Exception as e:
-            return f"ERROR:\nTool execution failed.\nTool: {name}\nException: {str(e)}"
+            return (
+                f"ERROR:\nTool execution failed.\n"
+                f"Tool: {name}\nException: {str(e)}"
+            )
 
     def list_tools(self) -> Any:
         if self._session is None:
             return []
         return self._submit(self._session.list_tools()).tools
 
+    def list_resources(self) -> Any:
+        if self._session is None:
+            return []
+        return self._submit(self._session.list_resources()).resources
+
+    def list_resource_templates(self) -> Any:
+        if self._session is None:
+            return []
+        return self._submit(
+            self._session.list_resource_templates()
+        ).resourceTemplates
+
+    def list_prompts(self) -> Any:
+        if self._session is None:
+            return []
+        return self._submit(self._session.list_prompts()).prompts
+
     def discover_tools(self) -> dict[str, Callable[..., str]]:
         if self._session is None:
             return {}
         tools_response = self._submit(self._session.list_tools())
-        return {t.name: self._make_wrapper(t.name) for t in tools_response.tools}
+        return (
+            {t.name: self._make_wrapper(t.name) for t in tools_response.tools}
+        )
+
+    def discover_resources(self) -> dict[str, Callable[..., str]]:
+        if self._session is None:
+            return {}
+        resources = self.list_resources()
+        wrappers = {
+            (r.name or r.uri.path.split("/")[-1]):
+            self._make_resource_wrapper(
+                r.name or r.uri.path.split("/")[-1]
+            )
+            for r in resources
+        }
+        for resource in self.list_resource_templates():
+            name = resource.name or resource.uriTemplate
+            wrappers[name] = self._make_resource_template_wrapper(
+                resource.uriTemplate
+            )
+        return wrappers
+
+    def discover_prompts(self) -> dict[str, Callable[..., str]]:
+        if self._session is None:
+            return {}
+        prompts = self.list_prompts()
+        return {p.name: self._make_prompt_wrapper(p.name) for p in prompts}
 
     def _make_wrapper(self, tool_name: str) -> Callable[..., str]:
         def wrapper(**kwargs: Any) -> str:
@@ -144,11 +255,42 @@ class MCPClient:
         wrapper.__name__ = tool_name
         return wrapper
 
+    def _make_resource_wrapper(self, resource_name: str) -> Callable[..., str]:
+        def wrapper(**kwargs: Any) -> str:
+            return (
+                self._submit(
+                    self._read_resource_async(resource_name, **kwargs)
+                )
+            )
+
+        wrapper.__name__ = resource_name
+        return wrapper
+
+    def _make_resource_template_wrapper(
+        self, uri_template: str
+    ) -> Callable[..., str]:
+        def wrapper(**kwargs: Any) -> str:
+            return self._submit(
+                self._read_resource_template_async(uri_template, **kwargs)
+            )
+
+        wrapper.__name__ = uri_template
+        return wrapper
+
+    def _make_prompt_wrapper(self, prompt_name: str) -> Callable[..., str]:
+        def wrapper(**kwargs: Any) -> str:
+            return self._submit(self._get_prompt_async(prompt_name, **kwargs))
+
+        wrapper.__name__ = prompt_name
+        return wrapper
+
     def close(self) -> None:
         async def _signal_shutdown():
             await self._queue.put(None)
 
-        asyncio.run_coroutine_threadsafe(_signal_shutdown(), self._loop).result()
+        asyncio.run_coroutine_threadsafe(
+            _signal_shutdown(), self._loop
+        ).result()
         try:
             self._worker_future.result(timeout=5)
         except Exception:

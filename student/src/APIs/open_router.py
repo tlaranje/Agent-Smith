@@ -15,7 +15,7 @@ class OpenRouterAPI:
         self.client = OpenAI(
             api_key=api_key,
             base_url=api_url,
-            timeout=8.0,
+            timeout=60.0,
             max_retries=0,
         )
 

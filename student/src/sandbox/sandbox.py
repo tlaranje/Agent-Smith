@@ -43,9 +43,10 @@ class Sandbox:
         return instance
 
     def get_patch(self) -> str:
-        """Return the current git diff of /testbed as a string."""
+        """Return the current git diff of TESTBED_PATH as a string."""
+        testbed_path = os.environ.get("TESTBED_PATH", "/testbed")
         out, _ = self._exec(
-            "cd /testbed && git -c core.fileMode=false diff"
+            f"cd {testbed_path} && git -c core.fileMode=false diff"
         )
         return out
 
@@ -112,6 +113,8 @@ class Sandbox:
             "__builtins__": self._restricted_builtins()
         }
         namespace.update(self.mcp_client.discover_tools())
+        namespace.update(self.mcp_client.discover_resources())
+        namespace.update(self.mcp_client.discover_prompts())
         namespace["final_answer"] = self._final_answer
         import json as json_module
         namespace["json"] = json_module
@@ -142,7 +145,8 @@ class Sandbox:
         target directory may not exist yet, e.g. /tmp/eval_script.sh).
         """
         if not filepath.startswith("/"):
-            filepath = f"/testbed/{filepath}"
+            testbed_path = os.environ.get("TESTBED_PATH", "/testbed")
+            filepath = f"{testbed_path}/{filepath}"
         directory = os.path.dirname(filepath)
         self._exec(f"mkdir -p {directory}")
         self._write_code_to_container(content, filepath)
@@ -409,7 +413,9 @@ class Sandbox:
             return
 
         print(
-            "\n[bold green]=== Interactive Python Sandbox REPL ===[/bold green]"
+            "\n[bold green]"
+            "=== Interactive Python Sandbox REPL ==="
+            "[/bold green]"
         )
         print("Loading tools into your namespace...")
 
@@ -440,6 +446,53 @@ class Sandbox:
         console = code.InteractiveConsole(locals=namespace)
         console.interact(banner=banner, exitmsg="Exiting Python REPL.") """
 
+    def _run_repl_code(self, code_object: Any, namespace: dict) -> None:
+        """Run one interactive block with the configured resource limits."""
+        import resource
+        import signal
+
+        timeout = self.config.max_execution_time_seconds
+        memory_bytes = self.config.max_memory_mb * 1024 * 1024
+
+        def timeout_handler(signum, frame):
+            raise TimeoutError(
+                f"Execution exceeded {timeout} seconds."
+            )
+
+        previous_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        previous_limit = resource.getrlimit(resource.RLIMIT_AS)
+        soft_limit, hard_limit = previous_limit
+        if hard_limit == resource.RLIM_INFINITY:
+            new_hard_limit = memory_bytes
+        else:
+            new_hard_limit = min(hard_limit, memory_bytes)
+        new_soft_limit = (
+            new_hard_limit
+            if soft_limit == resource.RLIM_INFINITY
+            else min(soft_limit, new_hard_limit)
+        )
+        resource.setrlimit(
+            resource.RLIMIT_AS,
+            (new_soft_limit, new_hard_limit),
+        )
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+
+        try:
+            exec(code_object, namespace)
+        except TimeoutError as error:
+            print(f"[bold red][TIMEOUT] {error}[/bold red]")
+        except MemoryError:
+            print(
+                f"[bold red][MEMORY LIMIT EXCEEDED] Execution exceeded "
+                f"{self.config.max_memory_mb} MB.[/bold red]"
+            )
+        except Exception as error:
+            print(f"[bold red][RUNTIME ERROR] {error}[/bold red]")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            resource.setrlimit(resource.RLIMIT_AS, previous_limit)
+            signal.signal(signal.SIGALRM, previous_handler)
+
     def repl(self) -> None:
         import code
         if not self.container:
@@ -457,6 +510,24 @@ class Sandbox:
         if self.mcp_client:
             print(self.mcp_client.generate_manual())
 
+        sandbox = self
+
+        class SandboxConsole(code.InteractiveConsole):
+            def runsource(
+                self, source: str, filename: str = "<input>",
+                symbol: str = "single"
+            ) -> bool:
+                if not sandbox.config.validate_code(source):
+                    print(
+                        "[bold red]Code rejected: disallowed import, "
+                        "file path, or use of eval/exec.[/bold red]"
+                    )
+                    return False
+                return super().runsource(source, filename, symbol)
+
+            def runcode(self, code_object) -> None:
+                sandbox._run_repl_code(code_object, self.locals)
+
         banner = (
             "\n"
             "You are inside the local agent namespace.\n"
@@ -466,7 +537,7 @@ class Sandbox:
             "Type exit() or quit() to leave."
         )
 
-        console = code.InteractiveConsole(locals=namespace)
+        console = SandboxConsole(locals=namespace)
         console.interact(banner=banner, exitmsg="Exiting Python REPL.")
 
     def pull(self) -> None:

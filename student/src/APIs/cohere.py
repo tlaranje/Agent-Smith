@@ -27,7 +27,7 @@ class CohereAPI:
         self.client = cohere.ClientV2(
             api_key=api_key,
             base_url=api_url,
-            timeout=8.0,
+            timeout=60.0,
         )
 
     def generate_messages(
