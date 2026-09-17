@@ -61,9 +61,12 @@ def get_llms(
     from .cohere import CohereAPI
     from .mistral import MistralAPI
     from .cerebras import CerebrasAPI
+    from .local import LocalAPI
 
     # Each provider maps to (client class, env var prefix, list of
-    # model-name prefixes used to detect this provider).
+    # model-name prefixes used to detect this provider). A provider
+    # with `env_prefix` set to None does not require API keys (for
+    # example local self-hosted models).
     provider_map = {
         "gemini": (GeminiAPI, "GEMINI_API_KEY", [
             "gemini/", "gemini-"
@@ -82,6 +85,7 @@ def get_llms(
         "cerebras": (CerebrasAPI, "CEREBRAS_API_KEY", [
             "cerebras/", "gpt-oss-", "gemma-4-", "zai-glm-"
         ]),
+        "local": (LocalAPI, None, ["local/", "local-"]),
     }
 
     def find_provider(model_name: str) -> str:
@@ -111,28 +115,45 @@ def get_llms(
     # Instantiate the priority provider first, using every key
     # found and the (optional) custom provider URL.
     cls, env_prefix, _ = provider_map[priority_provider]
-    keys = _load_keys(env_prefix)
-    if not keys:
-        raise RuntimeError(
-            f"No API keys found for {priority_provider}"
-        )
-    ordered_providers[priority_provider] = [
-        cls(
-            api_key=key,
-            model_name=priority_model_name,
-            **(
-                {"api_url": priority_provider_url}
-                if priority_provider_url else {}
+    # Providers with env_prefix == None are keyless (local models).
+    if env_prefix is None:
+        ordered_providers[priority_provider] = [
+            cls(
+                model_name=priority_model_name,
+                **(
+                    {"api_url": priority_provider_url}
+                    if priority_provider_url else {}
+                )
             )
-        )
-        for key in keys
-    ]
+        ]
+    else:
+        keys = _load_keys(env_prefix)
+        if not keys:
+            raise RuntimeError(
+                f"No API keys found for {priority_provider}"
+            )
+        ordered_providers[priority_provider] = [
+            cls(
+                api_key=key,
+                model_name=priority_model_name,
+                **(
+                    {"api_url": priority_provider_url}
+                    if priority_provider_url else {}
+                )
+            )
+            for key in keys
+        ]
 
     # Add the remaining providers as fallbacks, in declaration
     # order, using their default model name and URL.
     for name, (cls, env_prefix, _) in provider_map.items():
         if name == priority_provider:
             continue
+        if env_prefix is None:
+            # Keyless provider (local) - instantiate without api_key.
+            ordered_providers[name] = [cls()]
+            continue
+
         keys = _load_keys(env_prefix)
         ordered_providers[name] = [
             cls(

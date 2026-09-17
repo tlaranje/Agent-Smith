@@ -9,7 +9,8 @@ import re
 mcp = FastMCP("swe-bench-tools")
 
 
-def _get_testbed_path() -> str:
+def _testbed_path() -> str:
+    """Return the repository root supplied by the evaluation harness."""
     return os.environ.get("TESTBED_PATH", "/testbed")
 
 
@@ -35,7 +36,7 @@ def _attach(container_id: str, eval_script: str = "") -> Sandbox:
 
     Returns:
         A Sandbox instance attached to the container, with
-        eval_script set and /testbed marked as a safe git
+        eval_script set and the repository marked as a safe git
         directory.
     """
     instance = Sandbox.attach(
@@ -47,13 +48,9 @@ def _attach(container_id: str, eval_script: str = "") -> Sandbox:
     instance.eval_script = eval_script or base64.b64decode(
         os.environ.get("EVAL_SCRIPT_B64", "")
     ).decode("utf-8")
-
-    testbed_path = _get_testbed_path()
-
     instance._exec(
-        f"git config --global --add safe.directory '{testbed_path}'"
+        f"git config --global --add safe.directory {_testbed_path()}"
     )
-
     return instance
 
 
@@ -121,6 +118,9 @@ def read_file(
     """
     if not sandbox:
         return "ERROR: No active sandbox container session found."
+
+    if not filepath.startswith("/"):
+        filepath = f"{_testbed_path()}/{filepath}"
 
     out, code = sandbox._exec(f"cat {filepath}")
     if code != 0:
@@ -196,16 +196,29 @@ def edit_file(filepath: str, old_str: str, new_str: str) -> str:
     if verify != new_content:
         return f"ERROR: write to {filepath} did not persist."
 
+    if filepath.endswith(".py"):
+        compile_out, compile_code = sandbox._exec(
+            f"python3 -m py_compile {filepath}"
+        )
+        if compile_code != 0:
+            return (
+                f"OK: {filepath} updated, but the edit introduced a "
+                f"syntax error:\n{compile_out}\n"
+                "Fix the syntax before running tests or finishing."
+            )
+
     return f"OK: {filepath} updated successfully."
 
 
 @mcp.tool()
-def list_files(directory: str, pattern: str = "*") -> str:
+def list_files(directory: str = "", pattern: str = "*") -> str:
     """
     List files under a directory matching a glob pattern.
 
     Args:
-        directory: Directory to search inside the sandbox.
+        directory: Directory to search inside the sandbox. Relative
+            paths (and the empty default) are resolved against
+            TESTBED_PATH.
         pattern: Glob pattern for filenames.
 
     Returns:
@@ -214,6 +227,11 @@ def list_files(directory: str, pattern: str = "*") -> str:
     """
     if not sandbox:
         return "ERROR: No active sandbox container session found."
+
+    if not directory:
+        directory = _testbed_path()
+    elif not directory.startswith("/"):
+        directory = f"{_testbed_path()}/{directory}"
 
     out, code = sandbox._exec(
         f"find {directory} -name '{pattern}' -type f | sort"
@@ -226,7 +244,7 @@ def list_files(directory: str, pattern: str = "*") -> str:
 @mcp.tool()
 def search_code(pattern: str, file_pattern: str = "*.py") -> str:
     """
-    Grep for a pattern across files in /testbed.
+    Grep for a pattern across files in the configured repository.
 
     Args:
         pattern: Text pattern to search for.
@@ -239,13 +257,10 @@ def search_code(pattern: str, file_pattern: str = "*.py") -> str:
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    testbed_path = _get_testbed_path()
-
     cmd = (
-        f"grep -rn --include='{file_pattern}' "
-        f"'{pattern}' '{testbed_path}'"
+        f"grep -rn --include='{file_pattern}' '{pattern}' "
+        f"{_testbed_path()}"
     )
-
     out, _ = sandbox._exec(cmd)
     return out or "No matches found."
 
@@ -269,18 +284,16 @@ def search_function_or_class_definition_in_code(name: str) -> str:
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    testbed_path = _get_testbed_path()
-
+    testbed_path = _testbed_path()
     cmd = (
-        f"grep -rn --include='*.py' "
-        f"-E '^(def {name}|class {name})' "
-        f"'{testbed_path}'"
+        f"grep -rn --include='*.py' -E '^(def {name}|class {name})' "
+        f"{testbed_path}"
     )
     out, _ = sandbox._exec(cmd)
     if not out:
         cmd = (
             "grep -rn --include='*.py' -E "
-            f"'(def {name}|class {name})\\b' /testbed"
+            f"'(def {name}|class {name})\\b' {testbed_path}"
         )
         out, _ = sandbox._exec(cmd)
     return out or f"No definition found for '{name}'."
@@ -296,7 +309,7 @@ def find_references(
     Args:
         name: Identifier to search for (matched as a whole word).
         filepath: If given, restrict the search to this file/
-            directory instead of the whole /testbed tree.
+            directory instead of the whole configured repository.
         line: Unused; reserved for future line-scoped search.
 
     Returns:
@@ -306,7 +319,7 @@ def find_references(
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    search_path = filepath if filepath else "/testbed"
+    search_path = filepath if filepath else _testbed_path()
     cmd = f"grep -rn --include='*.py' '\\b{name}\\b' {search_path}"
     out, _ = sandbox._exec(cmd)
     return out or f"No references found for '{name}'."
@@ -335,28 +348,26 @@ def run_tests() -> str:
 
 
 @mcp.tool()
-def run_command(command: str, workdir: str = "/testbed") -> str:
+def run_command(command: str, workdir: str | None = None) -> str:
     """Execute a shell command in the specified working directory."""
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    if workdir is None:
-        workdir = _get_testbed_path()
-
-    out, code = sandbox._exec(
-        f"cd '{workdir}' && {command}"
-    )
-
+    workdir = workdir or _testbed_path()
+    out, code = sandbox._exec(f"cd {workdir} && {command}")
     return f"Exit code: {code}\nOutput:\n{out}"
 
 
 @mcp.tool()
 def get_patch() -> str:
-    """Retrieve the unified git diff of all changes made to /testbed."""
+    """Retrieve the unified git diff of all changes in the repository."""
     if not sandbox:
         return "ERROR: No active sandbox container session found."
 
-    return sandbox.get_patch()
+    out, _ = sandbox._exec(
+        f"cd {_testbed_path()} && git -c core.fileMode=false diff"
+    )
+    return out
 
 
 if __name__ == "__main__":

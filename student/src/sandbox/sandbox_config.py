@@ -1,5 +1,11 @@
 from pydantic import BaseModel, Field
 import ast
+import os
+
+
+def _default_allowed_directories() -> list[str]:
+    testbed_path = os.environ.get("TESTBED_PATH", "/testbed").rstrip("/")
+    return [f"{testbed_path}/", "/tmp/agent/"]
 
 
 class SandboxConfig(BaseModel):
@@ -33,9 +39,9 @@ class SandboxConfig(BaseModel):
         "datetime", "datetime.*",
         "array", "cmath",
     ])
-    allowed_directories: list[str] = Field(default_factory=lambda: [
-        "/testbed/", "/tmp/agent/"
-    ])
+    allowed_directories: list[str] = Field(
+        default_factory=_default_allowed_directories
+    )
     max_execution_time_seconds: int = 30
     max_memory_mb: int = 512
 

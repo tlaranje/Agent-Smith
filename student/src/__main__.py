@@ -186,16 +186,21 @@ def run_mcp_http(
         else:
             print(f"[bold red]MCP Server Error:[/bold red] {response.text}")
 
+        # Replace the default benchmark stdio client started by sandbox.start()
+        # with the explicitly requested remote HTTP client.
+        if sandbox.mcp_client:
+            sandbox.mcp_client.close()
+            sandbox.mcp_client = None
+
         # Connect as an MCP client to the already-running server.
-        sandbox.mcp_client = sandbox.mcp_client or None
-        from student.src.mcp import MCPClient
+        from student.src.mcp import MCPClient  # ajusta ao teu import real
         sandbox.mcp_client = MCPClient(url=url)
 
         sandbox.repl()
 
     except httpx.RequestError as e:
         raise httpx.RequestError(
-            f"Network error connecting to MCP server: {e}"
+            f"[bold red]Network error connecting to MCP server:[/bold red] {e}"
         )
     finally:
         if sandbox.mcp_client:
