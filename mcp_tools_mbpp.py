@@ -2,12 +2,17 @@ from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from student.src.sandbox import Sandbox, SandboxConfig
+import json as json_module
 import os
 
 mcp = FastMCP("mbpp-tools")
 
 
 def _load_config() -> SandboxConfig:
+    """
+    Load a SandboxConfig from the SANDBOX_CONFIG_JSON env var,
+    falling back to defaults if it is not set.
+    """
     raw = os.environ.get("SANDBOX_CONFIG_JSON", "")
     if raw:
         return SandboxConfig.model_validate_json(raw)
@@ -17,6 +22,8 @@ def _load_config() -> SandboxConfig:
 sandbox: Sandbox | None = None
 current_task_tests: list[str] = []
 
+# When launched as a subprocess by Sandbox.start(), attach to the
+# already-running container instead of creating a new one.
 if os.environ.get("IS_MCP_SERVER"):
     container_id = os.environ.get("DOCKER_CONTAINER_ID", "")
     if not container_id:
@@ -30,6 +37,10 @@ if os.environ.get("IS_MCP_SERVER"):
 
 @mcp.custom_route("/initialize", methods=["POST"])
 async def initialize(request: Request) -> JSONResponse:
+    """
+    HTTP endpoint used by clients to (re)attach the server to a
+    running container and load the task's tests for this session.
+    """
     global sandbox, current_task_tests
     payload = await request.json()
 
@@ -59,6 +70,17 @@ async def initialize(request: Request) -> JSONResponse:
 
 @mcp.tool()
 def set_current_task_tests(test_list: list[str] | None = None) -> str:
+    """
+    Configure the tests used by run_tests for the current task.
+
+    Args:
+        test_list: List of assert statements to run against the
+            submitted solution.
+
+    Returns:
+        A confirmation message, or an error string if test_list
+        is missing.
+    """
     global current_task_tests
     if test_list is None:
         return "ERROR: test_list is required."
@@ -68,33 +90,55 @@ def set_current_task_tests(test_list: list[str] | None = None) -> str:
 
 
 @mcp.tool()
-def run_tests(code: str | None = None) -> str:
+def run_tests(
+    code: str | None = None, test_list: list[str] | None = None
+) -> str:
+    """
+    Run submitted code against the current task's tests inside
+    the sandbox.
+
+    Success is determined by whether the code executed cleanly
+    (no assertion failure, runtime error, timeout, or memory
+    limit violation) — it does not require final_answer() to
+    have been called.
+
+    Args:
+        code: The Python solution code to execute.
+        test_list: Optional list of assert statements to run
+            against the submitted solution. If omitted, falls
+            back to the tests configured via set_current_task_tests.
+
+    Returns:
+        A JSON string with "success" (bool) and "output" (str)
+        fields describing the result of the execution.
+    """
     if code is None:
-        return "ERROR: code is required."
-
+        return json_module.dumps(
+            {"success": False, "output": "ERROR: code is required."}
+        )
     if not sandbox:
-        return "ERROR: No active sandbox container session found."
+        return json_module.dumps({
+            "success": False,
+            "output": "ERROR: No active sandbox container session found."
+        })
 
-    if not current_task_tests:
-        return (
-            "Error: No active task. Call set_current_task_tests "
-            "first to load the tests."
-        )
+    tests_to_run = test_list if test_list is not None else current_task_tests
+    output, final_answer_called = sandbox.execute(code, test_list=tests_to_run)
 
-    output, success = sandbox.execute(code, test_list=current_task_tests)
+    # Treat runtime errors, timeouts, memory exceeded, and explicit
+    # sandbox validation rejections as failures. Previously the
+    # "Code rejected: ..." message could be mis-classified as a
+    # success because it doesn't start with the runtime error
+    # prefixes; ensure it's treated as a failure here.
+    ran_cleanly = not output.startswith((
+        "[RUNTIME ERROR]", "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]",
+        "Code rejected:"
+    ))
 
-    if success:
-        return (
-            f"SUCCESS: All tests passed successfully!\n\n"
-            f"The solution code is valid.\n"
-            f"Sandbox Output:\n{output}"
-        )
-    else:
-        return (
-            f"FAILURE: The code execution or a test assertion failed.\n"
-            f"Analyze the error logs below to fix your implementation:\n\n"
-            f"--- ERROR LOGS ---\n{output}"
-        )
+    return json_module.dumps({
+        "success": ran_cleanly,
+        "output": output,
+    })
 
 
 if __name__ == "__main__":

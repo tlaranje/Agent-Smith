@@ -17,7 +17,7 @@ dependencies = [
     "groq",
     "cohere",
     "openai",
-    "mcp",
+    "mcp<2",
     "fastmcp>=3.4.2",
     "mistralai",
 	  "cerebras"

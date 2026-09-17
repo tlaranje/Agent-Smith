@@ -10,13 +10,15 @@ import docker
 import shlex
 import io
 import os
+import resource
+import signal
+import code
+import sys
 
 
 class Sandbox:
     def __init__(
-        self,
-        agent: str = "MBPP",
-        image: str = "agent_sandbox:latest",
+        self, agent: str = "MBPP", image: str = "agent_sandbox:latest",
         config: SandboxConfig | None = None,
     ) -> None:
         self.image = image
@@ -31,34 +33,47 @@ class Sandbox:
 
     @classmethod
     def attach(
-        cls,
-        agent: str,
-        container_id: str,
+        cls, agent: str, container_id: str,
         config: SandboxConfig | None = None,
         image: str = "agent_sandbox:latest",
     ) -> "Sandbox":
-        """Reconnect to an already-running container (used inside the
+        """
+        Reconnect to an already-running container (used inside the
         MCP tool server subprocess, which does not manage the
-        container's lifecycle itself)."""
+        container's lifecycle itself).
+        """
         instance = cls(agent=agent, image=image, config=config)
         instance.container = instance.client.containers.get(container_id)
         return instance
 
     def get_patch(self) -> str:
+        """Return the current git diff of TESTBED_PATH as a string."""
+        testbed_path = os.environ.get("TESTBED_PATH", "/testbed")
         out, _ = self._exec(
-            "cd /testbed && git -c core.fileMode=false diff"
+            f"cd {testbed_path} && git -c core.fileMode=false diff"
         )
         return out
 
-    def _final_answer(self, answer_string: str) -> None:
+    def _final_answer(self, answer: str) -> None:
+        """
+        Persist the agent's final answer to a fixed path so it
+        can be retrieved after the sandboxed code finishes running.
+        """
         os.makedirs("/tmp/agent", exist_ok=True)
         with open(
             "/tmp/agent/final_result.py", "w", encoding="utf-8"
         ) as f:
-            f.write(answer_string)
+            f.write(answer)
 
     def _restricted_builtins(self) -> dict:
+        """
+        Build a minimal, safe subset of __builtins__ for use as
+        the namespace of sandboxed code (no I/O, no import, no
+        exec/eval-related builtins).
+        """
         import builtins
+        import json as json_module
+
         safe_builtins = {}
         allowed = [
             'abs', 'all', 'any', 'bin', 'bool', 'chr', 'dict', 'divmod',
@@ -68,24 +83,53 @@ class Sandbox:
             'range', 'repr', 'reversed', 'round', 'set', 'slice',
             'sorted', 'str', 'sum', 'tuple', 'type', 'zip', 'Exception',
             'ValueError', 'TypeError', 'AssertionError', 'IndexError',
-            'KeyError',
+            'KeyError', 'dir'
         ]
         for name in allowed:
             if hasattr(builtins, name):
                 safe_builtins[name] = getattr(builtins, name)
+
+        safe_builtins['json'] = json_module
+
+        ALLOWED_IMPORTS = {'json'}
+
+        def _safe_import(
+            name, globals=None, locals=None, fromlist=(), level=0
+        ):
+            if name not in ALLOWED_IMPORTS:
+                raise ImportError(
+                    f"import of '{name}' is not allowed in the sandbox"
+                )
+            return __import__(name, globals, locals, fromlist, level)
+
+        safe_builtins['__import__'] = _safe_import
         return safe_builtins
 
     def build_namespace(self) -> dict:
+        """
+        Build the execution namespace exposed to sandboxed code:
+        restricted builtins, the MCP tools as callables, and
+        final_answer.
+        """
         if self.mcp_client is None:
             return {}
         namespace: dict[str, Any] = {
             "__builtins__": self._restricted_builtins()
         }
         namespace.update(self.mcp_client.discover_tools())
+        namespace.update(self.mcp_client.discover_resources())
+        namespace.update(self.mcp_client.discover_prompts())
         namespace["final_answer"] = self._final_answer
+        import json as json_module
+        namespace["json"] = json_module
         return namespace
 
     def _write_code_to_container(self, code: str, path: str) -> None:
+        """
+        Write `code` into the running container at `path` by
+        streaming an in-memory tar archive (avoids touching the
+        host filesystem).
+        """
         directory = os.path.dirname(path)
         filename = os.path.basename(path)
 
@@ -100,8 +144,13 @@ class Sandbox:
         self.container.put_archive(directory, tarstream)
 
     def _write_file(self, filepath: str, content: str) -> None:
-        """Alias used by the SWE-bench tools (mkdir -p first, since the
-        target directory may not exist yet, e.g. /tmp/eval_script.sh)."""
+        """
+        Alias used by the SWE-bench tools (mkdir -p first, since the
+        target directory may not exist yet, e.g. /tmp/eval_script.sh).
+        """
+        if not filepath.startswith("/"):
+            testbed_path = os.environ.get("TESTBED_PATH", "/testbed")
+            filepath = f"{testbed_path}/{filepath}"
         directory = os.path.dirname(filepath)
         self._exec(f"mkdir -p {directory}")
         self._write_code_to_container(content, filepath)
@@ -109,6 +158,22 @@ class Sandbox:
     def execute(
         self, code: str, test_list: list[str] | None = None
     ) -> tuple[str, bool]:
+        """
+        Validate, inject helpers into, and run a piece of code
+        inside the sandboxed container.
+
+        Args:
+            code: The Python source to run.
+            test_list: Optional test statements appended after the
+                code (used for MBPP-style tasks).
+
+        Returns:
+            A tuple of (output, success). output is either the
+            final_answer content on success, or the raw
+            stdout/stderr / an error message on failure. success is
+            True only if final_answer was called and the process
+            exited cleanly.
+        """
         if not self.config.validate_code(code):
             return (
                 "Code rejected: disallowed import, "
@@ -118,6 +183,9 @@ class Sandbox:
 
         self.container.exec_run("rm -f /tmp/agent/final_result.py")
 
+        # Inject a final_answer() shim so the LLM's generated code
+        # can "return" a result by writing to a known file, which we
+        # read back afterward.
         final_answer_shim = (
             "import os as _os\n"
             "def final_answer(answer_string):\n"
@@ -138,25 +206,39 @@ class Sandbox:
         timeout = self.config.max_execution_time_seconds
         memory_kb = self.config.max_memory_mb * 1024
 
+        # ulimit caps virtual memory; timeout caps wall-clock time,
+        # both enforced inside the container itself.
         res = self.container.exec_run(
-            "bash",
-            [
-                "-lc",
-                (
-                    f"ulimit -v {memory_kb}; "
-                    f"timeout {timeout}s python3 /sandbox/code.py"
-                ),
-            ],
+            cmd=["bash", "-lc", (
+                f"ulimit -v {memory_kb}; "
+                f"timeout {timeout}s python3 /sandbox/code.py"
+            )],
         )
 
         output = res.output.decode("utf-8", errors="replace")
 
+        # --- OUTPUT SIZE TRUNCATION CHECK ---
+        # Get max limit from config if available, otherwise
+        # default to 1,000,000 characters
+        max_chars = getattr(self.config, "max_output_chars", 1000000)
+        is_truncated = False
+        if len(output) > max_chars:
+            output = output[:max_chars]
+            is_truncated = True
+
         if res.exit_code == 124:
-            return (
-                f"{output}"
-                f"[TIMEOUT]\nExecution exceeded {timeout} seconds.",
-                False,
+            warn_msg = (
+                f"{output}\n\n"
+                f"[TIMEOUT] Execution exceeded {timeout} seconds.\n"
+                "[PARTIAL OUTPUT] The execution hit the timeout. "
+                "The output above is partial."
             )
+            if is_truncated:
+                warn_msg += (
+                    "\n[TRUNCATED] The output also exceeded the "
+                    f"size limit of {max_chars} characters and was cut short."
+                )
+            return warn_msg, False
 
         if res.exit_code == 137 or "MemoryError" in output:
             return (
@@ -166,10 +248,13 @@ class Sandbox:
             )
 
         if res.exit_code != 0:
-            return (
-                f"[RUNTIME ERROR]\n{output}",
-                False,
-            )
+            warn_msg = f"[RUNTIME ERROR]\n{output}"
+            if is_truncated:
+                warn_msg += (
+                    "\n\n[TRUNCATED] Output was truncated "
+                    f"because it exceeded {max_chars} characters."
+                )
+            return warn_msg, False
 
         check = self.container.exec_run(
             "test -f /tmp/agent/final_result.py"
@@ -183,11 +268,34 @@ class Sandbox:
                 "utf-8", errors="replace"
             )
             self.container.exec_run("rm -f /tmp/agent/final_result.py")
+            # Truncate final answer as well if it exceeds limits
+            if len(answer) > max_chars:
+                answer = (
+                    f"{answer[:max_chars]}\n\n"
+                    "[TRUNCATED] Final answer output was truncated "
+                    f"because it exceeded {max_chars} characters."
+                )
             return answer, True
+
+        if is_truncated:
+            output += (
+                "\n\n[TRUNCATED] Output was truncated "
+                f"because it exceeded {max_chars} characters."
+            )
 
         return output, False
 
     def build(self, path: str = ".") -> None:
+        """
+        Build the sandbox Docker image from a Dockerfile.
+
+        Args:
+            path: Directory containing the Dockerfile.
+
+        Raises:
+            FileNotFoundError: If no Dockerfile exists at path.
+            BuildError: If the Docker build itself fails.
+        """
         dockerfile_path = os.path.join(path, "Dockerfile")
         if not os.path.exists(dockerfile_path):
             raise FileNotFoundError(
@@ -198,6 +306,8 @@ class Sandbox:
             with open(dockerfile_path, "r", encoding="utf-8") as f:
                 dockerfile_content = f.read()
 
+            # path=None means Docker only sees the Dockerfile
+            # contents, not the surrounding build context/files.
             self.client.images.build(
                 fileobj=io.BytesIO(dockerfile_content.encode("utf-8")),
                 path=None,
@@ -212,7 +322,12 @@ class Sandbox:
         except Exception as e:
             raise e
 
-    def _start_mcp_client(self) -> None:
+    def _start_mcp_client(self, custom_command: str | None = None) -> None:
+        """
+        Launch the appropriate MCP tool server subprocess for
+        this agent type, passing it the container id and config so
+        it can act on the already-running sandbox.
+        """
         if self.mcp_client is not None:
             return
 
@@ -224,7 +339,26 @@ class Sandbox:
             self.eval_script.encode("utf-8")
         ).decode("ascii")
 
-        if self.agent == "MBPP":
+        # Se houver comando customizado passado pela CLI (mcp_command)
+        if custom_command:
+            import shlex
+            tokens = shlex.split(custom_command)
+            if not tokens:
+                raise ValueError("Custom MCP command cannot be empty")
+
+            # Resolve caminhos .py em relação à raiz
+            resolved = [
+                str(self._root_path / tok) if tok.endswith(".py") else tok
+                for tok in tokens
+            ]
+
+            self.mcp_client = MCPClient(
+                command=resolved[0],
+                args=resolved[1:],
+                env=server_env,
+            )
+        # Fallback para o comportamento padrão baseado no Benchmark
+        elif self.agent == "MBPP":
             self.mcp_client = MCPClient(
                 command="uv",
                 args=[
@@ -233,7 +367,6 @@ class Sandbox:
                 ],
                 env=server_env,
             )
-
         elif self.agent == "SWE_BENCH":
             self.mcp_client = MCPClient(
                 command="uv",
@@ -244,7 +377,15 @@ class Sandbox:
                 env=server_env,
             )
 
-    def start(self) -> None:
+    def start(self, custom_command: str | None = None) -> None:
+        """
+        Start the sandbox container (if not already running)
+        with no network access and a memory cap, then start its
+        MCP tool server.
+
+        Raises:
+            Exception: Re-raised if the container fails to start.
+        """
         if not self.container:
             try:
                 self.container = self.client.containers.run(
@@ -263,11 +404,218 @@ class Sandbox:
                         }
                     },
                 )
-                self._start_mcp_client()
+                self._start_mcp_client(custom_command=custom_command)
             except Exception as e:
                 raise e
 
+    """ def repl(self) -> None:
+        import sys
+        import code
+
+        if not self.container:
+            print("[bold red]Sandbox not running. Start it first.[/bold red]")
+            return
+
+        print(
+            "\n[bold green]"
+            "=== Interactive Python Sandbox REPL ==="
+            "[/bold green]"
+        )
+        print("Loading tools into your namespace...")
+
+        namespace = self.build_namespace()
+
+        if self.mcp_client:
+            print(self.mcp_client.generate_manual())
+
+        if not sys.stdin.isatty():
+            # Non-interactive: stdin is piped input (e.g. `cat file | ...`).
+            # Read it all and exec as a whole script, avoiding the
+            # InteractiveConsole's line-by-line block-closing issues.
+            source = sys.stdin.read()
+            try:
+                exec(compile(source, "<piped_input>", "exec"), namespace)
+            except Exception as e:
+                print(f"[bold red]Error: {e}[/bold red]")
+            print("\nExiting Python REPL.")
+            return
+
+        banner = (
+            "\nYou are inside the local agent namespace.\n"
+            "Type your Python code below. Example:\n"
+            ">>> result = run_tests()\n"
+            ">>> print(result)\n"
+            "Type exit() or quit() to leave."
+        )
+        console = code.InteractiveConsole(locals=namespace)
+        console.interact(banner=banner, exitmsg="Exiting Python REPL.") """
+
+    def _run_repl_code(self, code_object: Any, namespace: dict) -> None:
+        """Run one interactive block with the configured resource limits."""
+        import resource
+        import signal
+
+        timeout = self.config.max_execution_time_seconds
+        memory_bytes = self.config.max_memory_mb * 1024 * 1024
+
+        def timeout_handler(signum, frame):
+            raise TimeoutError(
+                f"Execution exceeded {timeout} seconds."
+            )
+
+        previous_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        previous_limit = resource.getrlimit(resource.RLIMIT_AS)
+        soft_limit, hard_limit = previous_limit
+        if hard_limit == resource.RLIM_INFINITY:
+            new_hard_limit = memory_bytes
+        else:
+            new_hard_limit = min(hard_limit, memory_bytes)
+        new_soft_limit = (
+            new_hard_limit
+            if soft_limit == resource.RLIM_INFINITY
+            else min(soft_limit, new_hard_limit)
+        )
+        resource.setrlimit(
+            resource.RLIMIT_AS,
+            (new_soft_limit, new_hard_limit),
+        )
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+
+        try:
+            exec(code_object, namespace)
+        except TimeoutError as error:
+            print(f"[bold red][TIMEOUT] {error}[/bold red]")
+        except MemoryError:
+            print(
+                f"[bold red][MEMORY LIMIT EXCEEDED] Execution exceeded "
+                f"{self.config.max_memory_mb} MB.[/bold red]"
+            )
+        except Exception as error:
+            print(f"[bold red][RUNTIME ERROR] {error}[/bold red]")
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            resource.setrlimit(resource.RLIMIT_AS, previous_limit)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+    def _apply_memory_limit(self) -> None:
+        """
+        Cap the REPL process's virtual memory to
+        config.max_memory_mb, so runaway allocations inside the
+        interactive session hit MemoryError instead of consuming
+        the host. Best-effort: silently skipped on platforms
+        (e.g. Windows) where RLIMIT_AS isn't supported.
+        """
+        try:
+            limit_bytes = self.config.max_memory_mb * 1024 * 1024
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            new_hard = hard if hard != resource.RLIM_INFINITY else limit_bytes
+            resource.setrlimit(
+                resource.RLIMIT_AS, (limit_bytes, max(limit_bytes, new_hard))
+            )
+        except (ValueError, OSError, AttributeError):
+            pass
+
+    def repl(self) -> None:
+        """
+        Launches an interactive Python REPL session pre-populated
+        with the MCP tools in its local namespace, subject to the
+        same import, filesystem, timeout, and memory restrictions
+        as sandboxed code executed via execute().
+
+        If stdin is a TTY, runs a normal interactive console. If
+        stdin is piped, feeds each line to the console exactly as
+        interactive input would, flushing any buffered "last block"
+        on EOF.
+
+        Each pushed statement is wall-clock bounded by
+        config.max_execution_time_seconds via SIGALRM.
+        KeyboardInterrupt and SystemExit are never caught here -
+        they propagate naturally out of console.push()/interact(),
+        as required for proper shutdown.
+        """
+        if not self.container:
+            print("[bold red]Sandbox not running. Start it first.[/bold red]")
+            return
+
+        # Enforce the configured memory ceiling on this REPL process
+        # itself (best-effort), mirroring the ulimit used by execute().
+        self._apply_memory_limit()
+
+        namespace = self.build_namespace()
+
+        banner = (
+            "\n"
+            "You are inside the local agent namespace.\n"
+            f"Authorized imports: {self.config.authorized_imports}\n"
+            f"Allowed directories: {self.config.allowed_directories}\n"
+            "Type your Python code below. Example:\n"
+            ">>> result = run_tests()\n"
+            ">>> print(result)\n"
+            "Type exit() or quit() to leave."
+        )
+
+        console = code.InteractiveConsole(locals=namespace)
+
+        statement_timeout = self.config.max_execution_time_seconds
+
+        class _StatementTimeout(Exception):
+            """Raised when a single REPL statement exceeds the time limit."""
+
+        def _alarm_handler(signum, frame):
+            raise _StatementTimeout(
+                f"Statement exceeded the {statement_timeout}s time limit"
+            )
+
+        has_alarm = hasattr(signal, "SIGALRM")
+        if has_alarm:
+            signal.signal(signal.SIGALRM, _alarm_handler)
+
+        def _push_with_timeout(line: str) -> bool:
+            """
+            Push one line into the console, applying the same
+            timeout/memory boundaries as sandboxed execution.
+            Import and filesystem restrictions are enforced inside
+            the namespace itself (via __import__/open overrides),
+            so malformed/disallowed statements surface as normal
+            Python exceptions the console already prints - the LLM
+            (or user) is never left guessing what happened.
+            """
+            if has_alarm:
+                signal.alarm(statement_timeout)
+            try:
+                return console.push(line)
+            except _StatementTimeout as e:
+                print(f"[bold red][TIMEOUT] {e}[/bold red]")
+                return False
+            except MemoryError:
+                print(
+                    f"[bold red][MEMORY LIMIT EXCEEDED] Statement "
+                    f"exceeded {self.config.max_memory_mb} MB.[/bold red]"
+                )
+                return False
+            finally:
+                if has_alarm:
+                    signal.alarm(0)
+
+        if not sys.stdin.isatty():
+            print(banner)
+            for line in sys.stdin:
+                _push_with_timeout(line.rstrip("\n"))
+            if console.buffer:
+                _push_with_timeout("")
+            print("\nExiting Python REPL.")
+            return
+
+        console.interact(banner=banner, exitmsg="Exiting Python REPL.")
+
     def pull(self) -> None:
+        """
+        Pull self.image from the registry.
+
+        Raises:
+            RuntimeError: If the image is not found.
+            Exception: Re-raised for any other pull failure.
+        """
         try:
             print(
                 f"[bold green][+][/bold green] Pulling image "
@@ -286,12 +634,22 @@ class Sandbox:
             raise e
 
     def enter(self) -> None:
+        """
+        Open an interactive bash shell inside the running
+        container (for manual debugging).
+        """
         if not self.container:
             return
 
         os.system(f"docker exec -it {self.container.id} bash")
 
     def stop(self) -> None:
+        """
+        Stop and discard the running container, if any.
+
+        Raises:
+            Exception: Re-raised if stopping the container fails.
+        """
         if self.container:
             try:
                 self.container.stop()
@@ -302,23 +660,69 @@ class Sandbox:
     def _exec(
         self, cmd: str, timeout: int | None = None
     ) -> tuple[str, int]:
+        """
+        Run a shell command inside the container with a wall-clock
+        timeout. Memory is bounded by the container's cgroup mem_limit
+        (set at container start), not by a per-command ulimit, since
+        commands run here (git, pip, etc.) can need large virtual
+        memory mappings without actually using much physical memory.
+
+        Args:
+            cmd: Shell command to run.
+            timeout: Timeout in seconds; defaults to
+                config.max_execution_time_seconds.
+
+        Returns:
+            A tuple of (output, exit_code). output has a
+            "[TIMEOUT]", "[MEMORY LIMIT EXCEEDED]", or "[TRUNCATED]" note
+            appended if the command exceeded the configured limits.
+        """
         effective_timeout = (
             timeout
             if timeout is not None
             else self.config.max_execution_time_seconds
         )
-        wrapped = (
-            f"timeout {effective_timeout}s bash -c " + shlex.quote(cmd)
+
+        # Quote the command so it survives being passed as a single
+        # argument to bash -c.
+        wrapped_cmd = (
+            f"timeout {effective_timeout}s bash -c {shlex.quote(cmd)}"
         )
-        result = self.container.exec_run(["bash", "-c", wrapped])
+
+        result = self.container.exec_run(["bash", "-c", wrapped_cmd])
+
         output = (
             result.output.decode("utf-8", errors="replace")
             if result.output
             else ""
         )
+
+        # --- OUTPUT SIZE TRUNCATION CHECK ---
+        max_chars = getattr(self.config, "max_output_chars", 1000000)
+        is_truncated = False
+        if len(output) > max_chars:
+            output = output[:max_chars]
+            is_truncated = True
+
         if result.exit_code == 124:
             output += (
-                f"\n[TIMEOUT] Command exceeded "
-                f"{effective_timeout} seconds."
+                f"\n[TIMEOUT] Command exceeded {effective_timeout} seconds.\n"
+                "[PARTIAL OUTPUT] The command execution hit "
+                "the timeout; the output above is partial."
             )
+        elif (
+            result.exit_code == 137
+            or "MemoryError" in output
+        ):
+            output += (
+                "\n[MEMORY LIMIT EXCEEDED] "
+                f"Command exceeded {self.config.max_memory_mb} MB."
+            )
+
+        if is_truncated:
+            output += (
+                f"\n[TRUNCATED] Tool output was truncated because it exceeded "
+                f"the maximum limit of {max_chars} characters."
+            )
+
         return output, result.exit_code

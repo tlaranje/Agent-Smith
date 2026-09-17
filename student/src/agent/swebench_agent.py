@@ -1,15 +1,20 @@
-from ..parser import SWEBenchTaskInput
-from ..sandbox import Sandbox
 from typing import Any, List, Optional
+from ..parser import SWEBenchTaskInput
 from pydantic import BaseModel, Field
+from ..sandbox import Sandbox
 from datetime import datetime
 import json
 import time
 import re
 import ast
 import sys
+import os
 
-SYSTEM_PROMPT = """
+RED = "\033[91m"
+YELLOW = "\033[93m"
+END = "\033[0m"
+
+S_P = """
 You are an expert software engineer fixing bugs in existing Python
 projects.
 
@@ -18,6 +23,20 @@ The repository is already available at /testbed.
 The available sandbox tools are documented below.
 
 Use the tools as normal Python functions.
+
+Use this response structure for every step:
+Thought: briefly state the next investigation or fix.
+Code:
+```python
+result = read_file(filepath="/testbed/path/to/file.py")
+```
+Observation: wait for the real sandbox/tool result before continuing.
+
+Effective loop example:
+1. Inspect the relevant files with read_file or search_code.
+2. Edit the smallest necessary region with edit_file.
+3. Run run_tests() and use its output to guide any correction.
+4. Call final_answer(get_patch()) only after the evaluation passes.
 
 Requirements:
 
@@ -48,6 +67,30 @@ Requirements:
 - Return only one tool invocation at a time.
 - Do not explain your reasoning.
 """
+
+MAX_SWEBENCH_ITERATIONS = 30
+MAX_SWEBENCH_INPUT_TOKENS = 300_000
+MAX_SWEBENCH_OUTPUT_TOKENS = 10_000
+MAX_SWEBENCH_TIME_SECONDS = 900.0
+
+
+def short_error(e: Exception, max_len: int = 150) -> str:
+    msg = str(e).replace("\n", " ").strip()
+
+    match = re.search(r"'message':\s*'([^']*)'", msg)
+    if match:
+        msg = match.group(1)
+    else:
+        msg = re.sub(r"^\w*Error:?\s*", "", msg)
+        msg = re.sub(r"^\d{3}[\s\-:]*[A-Z_]*\.?\s*", "", msg)
+
+    if ". " in msg:
+        msg = msg.split(". ")[0] + "."
+
+    if len(msg) > max_len:
+        msg = msg[:max_len].rstrip() + "..."
+
+    return msg.strip()
 
 
 class StepMetrics(BaseModel):
@@ -151,7 +194,7 @@ class SolutionOutput(BaseModel):
         default_factory=list,
         description="Per-step metrics, one entry per agent iteration"
     )
-    system_prompt: str = Field(
+    S_P: str = Field(
         default="",
         description=(
             "Full system prompt sent to the LLM (for provenance checking)"
@@ -168,7 +211,8 @@ class SolutionOutput(BaseModel):
 
 
 def _coerce(value: str) -> Any:
-    """Try to interpret a raw XML-captured string as a Python/JSON
+    """
+    Try to interpret a raw XML-captured string as a Python/JSON
     literal (int, float, bool, list, dict...) before falling back to
     the original string. Only the <invoke> XML format needs this --
     the JSON/ReAct formats already get correct types from json.loads."""
@@ -180,7 +224,7 @@ def _coerce(value: str) -> Any:
 
 class SWEBenchAgent:
     def __init__(self, llms: dict[str, list], sandbox: Sandbox,
-                 max_iterations: int = 10) -> None:
+                 max_iterations: int = MAX_SWEBENCH_ITERATIONS) -> None:
         self.sandbox = sandbox
         self.sandbox.pull()
         self.max_iterations: int = max_iterations
@@ -189,6 +233,13 @@ class SWEBenchAgent:
         self.current_llm_index: int = 0
 
     def chose_llm(self) -> None:
+        """
+        Switch to the next available LLM client.
+
+        Raises:
+            ValueError: If there are no more LLM clients/tokens
+                left to fall back to.
+        """
         if self.current_llm_index + 1 >= len(self.llms):
             raise ValueError("Error no more tokens.")
 
@@ -196,11 +247,24 @@ class SWEBenchAgent:
         self.llm = self.llms[self.current_llm_index]
 
     def solve(self, task: SWEBenchTaskInput) -> SolutionOutput:
+        """
+        Solve a SWE-bench task by iterating with the LLM and
+        sandbox until final_answer() is called or iterations run out.
+
+        Args:
+            task: The SWE-bench task definition, including the repo,
+                instance id, problem statement, and eval script.
+
+        Returns:
+            The resulting SolutionOutput, containing the produced
+            git patch and whether it was considered successful.
+        """
         start_time = time.time()
         steps: list[StepMetrics] = []
         total_requests = 0
         total_input_tokens = 0
         total_output_tokens = 0
+        tests_run = False
 
         self.sandbox.eval_script = task.eval_script
         self.sandbox.start()
@@ -218,27 +282,77 @@ class SWEBenchAgent:
 
         try:
             for iteration in range(self.max_iterations):
+                if time.time() - start_time >= MAX_SWEBENCH_TIME_SECONDS:
+                    return SolutionOutput(
+                        task_id=task.instance_id,
+                        benchmark="swebench",
+                        success=False,
+                        solution=self.sandbox.get_patch(),
+                        S_P=prompt,
+                        iterations=iteration,
+                        total_requests=total_requests,
+                        total_input_tokens=total_input_tokens,
+                        total_output_tokens=total_output_tokens,
+                        total_time_seconds=time.time() - start_time,
+                        steps=steps,
+                        error="SWE-bench time limit exceeded",
+                    )
+
+                if (
+                    total_input_tokens >= MAX_SWEBENCH_INPUT_TOKENS
+                    or total_output_tokens >= MAX_SWEBENCH_OUTPUT_TOKENS
+                ):
+                    return SolutionOutput(
+                        task_id=task.instance_id,
+                        benchmark="swebench",
+                        success=False,
+                        solution=self.sandbox.get_patch(),
+                        S_P=prompt,
+                        iterations=iteration,
+                        total_requests=total_requests,
+                        total_input_tokens=total_input_tokens,
+                        total_output_tokens=total_output_tokens,
+                        total_time_seconds=time.time() - start_time,
+                        steps=steps,
+                        error="SWE-bench token limit exceeded",
+                    )
+
                 retries = 0
 
+                # Keep retrying with fallback LLMs until one call
+                # succeeds (e.g. handles rate limits/key errors).
                 while True:
                     try:
                         request_start = time.time()
-                        response = self.llm.generate_messages(messages)
+                        remaining_output = (
+                            MAX_SWEBENCH_OUTPUT_TOKENS - total_output_tokens
+                        )
+                        response = self.llm.generate_messages(
+                            messages,
+                            max_output_tokens=remaining_output,
+                        )
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
-                    except Exception:
+                    except Exception as e:
                         retries += 1
+
                         print(
-                            "[Warning] Error occurred"
-                            f" with {self.llm.model_name}",
+                            f"{RED}[Warning] Error occurred with "
+                            f"{self.llm.model_name}: {type(e).__name__}: "
+                            f"{short_error(e)}{END}",
                             file=sys.stderr,
                         )
+                        if retries > 50:
+                            raise RuntimeError(
+                                "All LLM providers/keys failed after "
+                                f"{retries} retries. Last error: {e}"
+                            ) from e
                         self.chose_llm()
 
                         print(
-                            "[Warning] Switching API key"
-                            f" of LLM model {self.llm.model_name}",
+                            f"{YELLOW}[Warning] Switching API key"
+                            f" of LLM model {self.llm.model_name}{END}",
                             file=sys.stderr,
                         )
 
@@ -249,11 +363,29 @@ class SWEBenchAgent:
                     "(empty response from the model)"
                 )
 
-                tool_name, tool_args = self.extract_tool_call(llm_output)
+                tool_name, tool_args, parse_note = self.extract_tool_call(
+                    llm_output
+                )
 
                 if tool_name == "final_answer":
                     patch = self.sandbox.get_patch()
 
+                    if not tests_run:
+                        messages.append(
+                            {"role": "assistant", "content": llm_output}
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "ERROR: run_tests() has not been called yet. "
+                                "Run the evaluation script and inspect its "
+                                "result before calling final_answer()."
+                            ),
+                        })
+                        continue
+
+                    # Guard against the model declaring victory
+                    # without having actually changed any files.
                     if not patch.strip():
                         messages.append(
                             {"role": "assistant", "content": llm_output}
@@ -287,7 +419,7 @@ class SWEBenchAgent:
                         benchmark="swebench",
                         success=bool(patch.strip()),
                         solution=patch,
-                        system_prompt=prompt,
+                        S_P=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -307,6 +439,12 @@ class SWEBenchAgent:
                     tool_output = self.sandbox.mcp_client.call_tool(
                         tool_name, **tool_args
                     )
+                    tests_run = tests_run or tool_name == "run_tests"
+                    if parse_note:
+                        tool_output = (
+                            f"[MALFORMED RESPONSE INTERPRETED] {parse_note}"
+                            f"\n\n{tool_output}"
+                        )
 
                 steps.append(StepMetrics(
                     step=iteration + 1,
@@ -326,6 +464,8 @@ class SWEBenchAgent:
                     {"role": "user", "content": f"Tool output:\n{tool_output}"}
                 )
         finally:
+            # Capture the patch and stop the sandbox regardless of
+            # whether we returned early or fell through the loop.
             patch = self.sandbox.get_patch()
             self.sandbox.stop()
 
@@ -334,7 +474,7 @@ class SWEBenchAgent:
             benchmark="swebench",
             success=False,
             solution=patch,
-            system_prompt=prompt,
+            S_P=prompt,
             iterations=self.max_iterations,
             total_requests=total_requests,
             total_input_tokens=total_input_tokens,
@@ -346,8 +486,14 @@ class SWEBenchAgent:
 
     @staticmethod
     def build_initial_prompt(task: SWEBenchTaskInput, manual: str) -> str:
+        testbed_path = os.environ.get("TESTBED_PATH", "/testbed")
+        S_P = (
+            S_P
+            if testbed_path == "/testbed"
+            else S_P.replace("/testbed", testbed_path)
+        )
         return (
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{S_P}\n\n"
             f"{manual}\n\n"
             "## Task\n"
             f"Repository: {task.repo}\n"
@@ -359,10 +505,41 @@ class SWEBenchAgent:
             "When the issue is resolved, call final_answer()."
         )
 
-    @staticmethod
-    def extract_tool_call(llm_output: str | None, ) -> tuple[str | None, dict]:
+    def extract_tool_call(
+        self, llm_output: str | None
+    ) -> tuple[str | None, dict, str | None]:
+        """
+        Parse a single tool call out of raw LLM output.
+
+        Tries, in order: fenced/bare JSON, <invoke> XML,
+        <tool_call> JSON, ReAct-style Action/Action Input, and
+        finally a best-effort Python AST parse of a bare function
+        call (e.g. `read_file(filepath="x")`).
+
+        The first four formats are documented, explicitly supported
+        response shapes, so parsing them successfully is never
+        "malformed". The final AST fallback, however, is only ever
+        reached when none of those documented formats matched --
+        i.e. the response itself was malformed relative to what the
+        system prompt asked for. When a tool call is still recovered
+        through that fallback, a human-readable `note` explaining
+        exactly how it was interpreted is returned alongside it, so
+        the caller can surface that explanation to the model instead
+        of silently rewarding non-compliant output.
+
+        Args:
+            llm_output: The raw text returned by the LLM, or None.
+
+        Returns:
+            A tuple of (tool_name, tool_args, note). tool_name is
+            None if no valid tool call could be parsed, in which
+            case tool_args is an empty dict. note is None unless the
+            call was recovered via the best-effort AST fallback, in
+            which case it explains how the malformed response was
+            still interpreted.
+        """
         if not llm_output:
-            return None, {}
+            return None, {}, None
 
         match = re.search(
             r"```json\s*(.*?)```", llm_output, re.DOTALL | re.IGNORECASE
@@ -373,6 +550,7 @@ class SWEBenchAgent:
         if match:
             raw = match.group(1)
         else:
+            # Fallback: grab the first bare {...} blob in the text.
             match = re.search(r"\{[\s\S]*\}", llm_output)
             if match:
                 raw = match.group(0)
@@ -381,17 +559,19 @@ class SWEBenchAgent:
             try:
                 obj = json.loads(raw)
 
+                # Accept either {"tool": ..., "args": {...}} or
+                # {"name": ..., "arguments": {...}} shapes.
                 if "tool" in obj:
                     args = obj.get("args", {})
                     if not isinstance(args, dict):
-                        return None, {}
-                    return obj["tool"], args
+                        return None, {}, None
+                    return obj["tool"], args, None
 
                 if "name" in obj:
                     args = obj.get("arguments", {})
                     if not isinstance(args, dict):
-                        return None, {}
-                    return obj["name"], args
+                        return None, {}, None
+                    return obj["name"], args, None
 
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
@@ -411,7 +591,7 @@ class SWEBenchAgent:
             ):
                 args[param.group(1)] = _coerce(param.group(2).strip())
 
-            return tool, args
+            return tool, args, None
 
         match = re.search(
             r"<tool_call>\s*(\{.*?\})\s*</tool_call>", llm_output, re.DOTALL
@@ -423,9 +603,9 @@ class SWEBenchAgent:
                 args = obj.get("arguments", {})
 
                 if not isinstance(args, dict):
-                    return None, {}
+                    return None, {}, None
 
-                return obj["name"], args
+                return obj["name"], args, None
 
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
@@ -439,30 +619,52 @@ class SWEBenchAgent:
             try:
                 args = json.loads(match.group(2))
                 if not isinstance(args, dict):
-                    return None, {}
+                    return None, {}, None
             except json.JSONDecodeError:
                 args = {}
 
-            return match.group(1), args
+            return match.group(1), args, None
+
+        # None of the documented formats (fenced JSON, <invoke> XML,
+        # <tool_call> JSON, ReAct) matched. Everything from here on
+        # is a best-effort recovery from a response that did not
+        # follow the requested structure, so any call we manage to
+        # extract is "malformed but interpreted anyway" and must be
+        # explained back to the model via `note`.
+        note: str | None = None
 
         code_match = re.search(
-            r"```(?:python)?\s*(.*?)```", llm_output, re.DOTALL | re.IGNORECASE
+            r"```(python)?\s*(.*?)```", llm_output, re.DOTALL | re.IGNORECASE
         )
 
         if code_match:
-            code = code_match.group(1).strip()
+            code = code_match.group(2).strip()
+            if code_match.group(1) is None:
+                note = (
+                    "your fenced code block was missing the `python` "
+                    "language tag (e.g. ```python ... ```); it was "
+                    "interpreted as Python anyway."
+                )
         else:
-            known_tools = (
-                "read_file", "edit_file", "list_files", "search_code",
-                "search_function_or_class_definition_in_code",
-                "find_references", "run_tests", "run_command", "final_answer",
-            )
+            # No code fence at all: only accept a bare call if it
+            # matches one of our known tool names, otherwise treat
+            # the whole output as unparsable code (will fail below).
+            assert self.sandbox.mcp_client is not None
+            known_tools = tuple(
+                t.name for t in self.sandbox.mcp_client.list_tools()
+            ) + ("final_answer",)
             m = re.search(r"\b([a-zA-Z_]\w*)\s*\([^()]*\)", llm_output)
-            code = (
-                m.group(0)
-                if m and m.group(1) in known_tools
-                else llm_output.strip()
-            )
+            if m and m.group(1) in known_tools:
+                code = m.group(0)
+                note = (
+                    "no fenced ```python code block was found in your "
+                    f"response; the call `{m.group(0)}` was located by "
+                    "scanning the raw text for a call to a known tool "
+                    "name instead. Always wrap tool calls in a fenced "
+                    "```python code block."
+                )
+            else:
+                code = llm_output.strip()
 
         try:
             tree = ast.parse(code)
@@ -470,6 +672,8 @@ class SWEBenchAgent:
             tree = None
 
         if tree is not None:
+            # Walk the AST looking for a single call with only
+            # literal keyword arguments, e.g. foo(bar=1, baz="x").
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(
                    node.func, ast.Name):
@@ -487,6 +691,38 @@ class SWEBenchAgent:
                             break
 
                     if valid:
-                        return node.func.id, args
+                        # "Clean" means the whole block is exactly one
+                        # top-level statement whose value is this call
+                        # (`foo(...)` or `result = foo(...)`). Anything
+                        # else -- extra statements, prose mixed in with
+                        # the call, etc. -- means we pulled the call out
+                        # of a block that didn't match what was asked
+                        # for, so it must be explained back to the model.
+                        is_clean = (
+                            len(tree.body) == 1
+                            and (
+                                (
+                                    isinstance(tree.body[0], ast.Expr)
+                                    and tree.body[0].value is node
+                                )
+                                or (
+                                    isinstance(tree.body[0], ast.Assign)
+                                    and tree.body[0].value is node
+                                )
+                            )
+                        )
+                        if not is_clean:
+                            segment = ast.get_source_segment(code, node)
+                            call_repr = (
+                                segment.strip() if segment else node.func.id
+                            )
+                            note = (
+                                "the code block contained more than a "
+                                f"single tool call; `{call_repr}` was "
+                                "extracted from within it via a "
+                                "best-effort scan. Respond with exactly "
+                                "one tool call per code block."
+                            )
+                        return node.func.id, args, note
 
-        return None, {}
+        return None, {}, None

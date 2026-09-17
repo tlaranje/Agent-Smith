@@ -9,24 +9,37 @@ import time
 import sys
 import re
 
-SYSTEM_PROMPT = """
-You are an expert Python programmer.
+RED = "\033[91m"
+YELLOW = "\033[93m"
+END = "\033[0m"
 
-You solve one programming task at a time.
+S_P = """Solve the MBPP task with the exact requested
+function signature. Return only short executable Python code: no
+explanation, docstring, repeated tests, or alternative solutions.
+After the implementation passes, call
+final_answer("<the clean function code>")."""
 
-Requirements:
+MAX_MBPP_OUTPUT_TOKENS = 1500
+MAX_RESPONSE_TOKENS = 700
 
-- Produce correct Python code implementing the requested function.
-- Follow the requested function signature exactly.
-- Do not import unavailable modules.
-- Do not access resources outside the sandbox.
-- Return only executable Python code. Do not call any tools yourself
-  and do not include markdown or explanations -- your code will be
-  tested and submitted automatically.
-- Once you are confident your solution is correct, call
-  final_answer("your complete clean function code here") as the last
-  line of your code.
-"""
+
+def short_error(e: Exception, max_len: int = 150) -> str:
+    msg = str(e).replace("\n", " ").strip()
+
+    match = re.search(r"'message':\s*'([^']*)'", msg)
+    if match:
+        msg = match.group(1)
+    else:
+        msg = re.sub(r"^\w*Error:?\s*", "", msg)
+        msg = re.sub(r"^\d{3}[\s\-:]*[A-Z_]*\.?\s*", "", msg)
+
+    if ". " in msg:
+        msg = msg.split(". ")[0] + "."
+
+    if len(msg) > max_len:
+        msg = msg[:max_len].rstrip() + "..."
+
+    return msg.strip()
 
 
 class StepMetrics(BaseModel):
@@ -45,13 +58,12 @@ class StepMetrics(BaseModel):
 
 
 class SolutionOutput(BaseModel):
-    """Output from student solution - this is what students must
-    produce."""
+    """Output from student solution - this is what students must produce."""
     task_id: str
-    benchmark: str  # "mbpp" or "swebench"
+    benchmark: str
     success: bool
-    solution: str  # Code for MBPP, patch for SWE-bench
-    system_prompt: str
+    solution: str
+    S_P: str
     iterations: int
     total_requests: int
     total_input_tokens: int
@@ -63,21 +75,19 @@ class SolutionOutput(BaseModel):
 
 
 def _coerce(value: str) -> Any:
-    """Try to interpret a raw XML-captured string as a Python/JSON
+    """
+    Try to interpret a raw XML-captured string as a Python/JSON
     literal (int, float, bool, list, dict...) before falling back to
     the original string. json.loads already distinguishes these
     correctly for the JSON/ReAct formats, but the <invoke> XML format
-    is captured via plain regex, so this is only needed here."""
+    is captured via plain regex, so this is only needed here.
+    """
     try:
         return json.loads(value)
     except (json.JSONDecodeError, ValueError):
         return value
 
 
-# Tools that exist on the MBPP MCP server for the agent's own internal
-# use (setting up the task, running the harness) -- these are never
-# meant to be called by the LLM inside the code it writes, so they are
-# hidden from the manual shown in the prompt.
 _INTERNAL_ONLY_TOOLS = {"set_current_task_tests", "run_tests"}
 
 
@@ -94,6 +104,13 @@ class MBPPAgent:
         self.current_llm_index: int = 0
 
     def chose_llm(self) -> None:
+        """
+        Switch to the next available LLM client.
+
+        Raises:
+            ValueError: If there are no more LLM clients/tokens
+                left to fall back to.
+        """
         if self.current_llm_index + 1 >= len(self.llms):
             raise ValueError("Error no more tokens.")
 
@@ -101,6 +118,17 @@ class MBPPAgent:
         self.llm = self.llms[self.current_llm_index]
 
     def solve(self, task: MBPPTaskInput) -> SolutionOutput:
+        """
+        Solve an MBPP task by iterating with the LLM and sandbox.
+
+        Args:
+            task: The MBPP task definition, including the function
+                signature and the tests it must pass.
+
+        Returns:
+            The resulting SolutionOutput, either with a passing
+            solution or marked as failed after max_iterations.
+        """
         start_time = time.time()
         steps: list[StepMetrics] = []
         total_requests = 0
@@ -110,10 +138,14 @@ class MBPPAgent:
         self.sandbox.start()
         assert self.sandbox.mcp_client is not None
 
+        # Register this task's tests in the sandbox so the
+        # run_tests tool knows what to check against.
         self.sandbox.mcp_client.call_tool(
             "set_current_task_tests", test_list=task.test_list
         )
 
+        # Build the tool manual shown to the LLM, hiding the
+        # internal-only tools (task setup, test runner).
         manual = self.sandbox.mcp_client.generate_manual(
             exclude=_INTERNAL_ONLY_TOOLS
         )
@@ -126,46 +158,79 @@ class MBPPAgent:
                 "content": prompt,
             }
         ]
-
+        # Run the LLM interaction loop but capture and return partial
+        # progress on failure so callers always get a populated JSON
+        # report (with success=False) instead of an empty result.
         try:
             for iteration in range(self.max_iterations):
                 retries = 0
+                # Keep retrying with fallback LLMs until one call
+                # succeeds (e.g. handles rate limits/key errors).
                 while True:
                     try:
                         request_start = time.time()
-                        response = self.llm.generate_messages(messages)
+                        remaining_output = (
+                            MAX_MBPP_OUTPUT_TOKENS - total_output_tokens
+                        )
+                        if remaining_output <= 0:
+                            # Return structured failure with collected
+                            # steps so far instead of raising.
+                            return SolutionOutput(
+                                task_id=str(task.task_id),
+                                benchmark="mbpp",
+                                success=False,
+                                solution="",
+                                S_P=prompt,
+                                iterations=iteration,
+                                total_requests=total_requests,
+                                total_input_tokens=total_input_tokens,
+                                total_output_tokens=total_output_tokens,
+                                total_time_seconds=time.time() - start_time,
+                                steps=steps,
+                                error="MBPP output token budget exhausted",
+                            )
+                        response = self.llm.generate_messages(
+                            messages,
+                            max_output_tokens=min(
+                                MAX_RESPONSE_TOKENS, remaining_output
+                            ),
+                        )
                         request_time_ms = (time.time() - request_start) * 1000
                         total_requests += 1
                         break
-                    except Exception:
+                    except Exception as e:
                         retries += 1
                         print(
-                            "[Warning] Error occurred"
-                            f" with {self.llm.model_name}",
+                            f"{RED}[Warning] Error occurred with "
+                            f"{self.llm.model_name}: {type(e).__name__}: "
+                            f"{short_error(e)}{END}",
                             file=sys.stderr,
                         )
+                        if retries >= len(self.llms):
+                            raise RuntimeError(
+                                "All LLM providers/keys failed after "
+                                f"{retries} retries. Last error: {e}"
+                            ) from e
                         self.chose_llm()
                         print(
-                            "[Warning] Switching API key"
-                            f" of LLM model {self.llm.model_name}",
+                            f"{YELLOW}[Warning] Switching API key"
+                            f" of LLM model {self.llm.model_name}{END}",
                             file=sys.stderr,
                         )
 
                 code = self.extract_code(response.content or "")
 
-                # Every code path -- including final_answer -- is
-                # executed inside the sandboxed container via the
-                # run_tests MCP tool. Sandbox.execute() already injects
-                # the final_answer shim and checks
-                # /tmp/agent/final_result.py there, so nothing is ever
-                # exec()'d in this process, and the code logged below is
-                # exactly what ran.
                 sandbox_output = self.sandbox.mcp_client.call_tool(
                     "run_tests", code=code
                 )
-                done = (
-                    "SUCCESS: All tests passed successfully!" in sandbox_output
-                )
+                try:
+                    test_result = json.loads(sandbox_output)
+                except json.JSONDecodeError:
+                    test_result = {
+                        "success": False,
+                        "output": sandbox_output,
+                    }
+                done = bool(test_result.get("success", False))
 
                 steps.append(StepMetrics(
                     step=iteration + 1,
@@ -186,8 +251,8 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        solution=code,
-                        system_prompt=prompt,
+                        solution=str(test_result.get("output") or code),
+                        S_P=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -195,27 +260,50 @@ class MBPPAgent:
                         total_time_seconds=time.time() - start_time,
                         steps=steps,
                     )
-                messages.append({
-                    "role": "assistant",
-                    "content": response.content or (
-                        "(empty response from the model)"
-                    ),
-                })
-                messages.append({
+                # Do not resend the growing conversation. The next request
+                # only needs the task and the latest execution observation.
+                messages = [{
                     "role": "user",
-                    "content": self._format_observation(
-                        sandbox_output, iteration
-                    )
-                })
+                    "content": (
+                        f"Task: {task.task_definition}\n"
+                        f"Signature: {task.function_definition}\n"
+                        f"Previous code:\n{code}\n"
+                        f"Latest result:\n{sandbox_output}\n"
+                        "Return only the corrected code."
+                    ),
+                }]
+        except Exception as e:
+            # Stop sandbox and return partial SolutionOutput with error
+            try:
+                self.sandbox.stop()
+            except Exception:
+                pass
+            return SolutionOutput(
+                task_id=str(task.task_id),
+                benchmark="mbpp",
+                success=False,
+                solution="",
+                S_P=prompt if 'prompt' in locals() else "",
+                iterations=iteration if 'iteration' in locals() else 0,
+                total_requests=total_requests,
+                total_input_tokens=total_input_tokens,
+                total_output_tokens=total_output_tokens,
+                total_time_seconds=time.time() - start_time,
+                steps=steps,
+                error=str(e),
+            )
         finally:
-            self.sandbox.stop()
+            try:
+                self.sandbox.stop()
+            except Exception:
+                pass
 
         return SolutionOutput(
             task_id=str(task.task_id),
             benchmark="mbpp",
             success=False,
             solution="",
-            system_prompt=prompt,
+            S_P=prompt,
             iterations=self.max_iterations,
             total_requests=total_requests,
             total_input_tokens=total_input_tokens,
@@ -240,7 +328,7 @@ class MBPPAgent:
         task_data = task.model_dump()
 
         lines = [
-            SYSTEM_PROMPT,
+            S_P,
             "",
             manual,
             "",
@@ -260,12 +348,30 @@ class MBPPAgent:
 
     @staticmethod
     def extract_code(text: str) -> str:
+        """
+        Extract executable code from a raw LLM response.
+
+        Tries several known formats in order (markdown code block,
+        <invoke> XML, <tool_call> JSON, ReAct-style Action/Action
+        Input, and bare XML), converting tool calls into an
+        equivalent `result = tool(...)` call. Falls back to the
+        stripped raw text if nothing matches.
+
+        Args:
+            text: The raw text returned by the LLM.
+
+        Returns:
+            A string of Python code ready to run in the sandbox.
+        """
+        # Preferred format: a fenced ```python``` code block.
         match = re.search(
             r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE
         )
         if match:
             return match.group(1).strip()
 
+        # Anthropic-style <invoke name="tool"><parameter ...>
+        # tool-call format.
         match = re.search(
             r"<invoke\s+name=\"([^\"]+)\">(.*?)</invoke>", text, re.DOTALL
         )
@@ -283,6 +389,8 @@ class MBPPAgent:
             params = ", ".join(f"{k}={v!r}" for k, v in args.items())
             return f"result = {tool}({params})"
 
+        # <tool_call>{"name": ..., "arguments": {...}}</tool_call>
+        # format used by some open models.
         match = re.search(
             r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL,
         )
@@ -296,6 +404,7 @@ class MBPPAgent:
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
+        # ReAct-style "Action: tool\nAction Input: {...}" format.
         match = re.search(
             r"Action:\s*(\w+)\s*"r"Action Input:\s*(\{.*?\})", text, re.DOTALL,
         )
@@ -309,6 +418,8 @@ class MBPPAgent:
             params = ", ".join(f"{k}={v!r}" for k, v in args.items())
             return f"result = {tool}({params})"
 
+        # Last resort: try parsing the whole text as a bare
+        # <invoke> XML element.
         try:
             root = ET.fromstring(text)
             if root.tag == "invoke":

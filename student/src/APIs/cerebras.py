@@ -7,9 +7,7 @@ from cerebras.cloud.sdk.types.chat.chat_completion import (
 
 class CerebrasAPI:
     def __init__(
-        self,
-        api_key: str,
-        model_name: str = "gpt-oss-120b",
+        self, api_key: str, model_name: str = "gpt-oss-120b",
         api_url: str = "https://api.cerebras.ai",
     ) -> None:
         self.api_key = api_key
@@ -19,12 +17,25 @@ class CerebrasAPI:
         self.client = Cerebras(
             api_key=api_key,
             base_url=api_url,
+            timeout=60.0,
+            max_retries=0,
         )
 
     def generate_messages(
-        self,
-        messages: list[dict[str, str]],
+        self, messages: list[dict[str, str]], max_output_tokens: int = 700
     ) -> Any:
+        """
+        Send messages to the Cerebras chat API and wrap the
+        result in a common LLMResponse.
+
+        Args:
+            messages: Conversation history as a list of role/
+                content dicts.
+
+        Returns:
+            An LLMResponse with the generated content and token
+            usage counts.
+        """
         from . import LLMResponse
 
         chat_completion = cast(
@@ -33,6 +44,7 @@ class CerebrasAPI:
                 model=self.model_name,
                 messages=cast(list[dict[str, object]], messages),
                 stream=False,
+                max_tokens=max_output_tokens,
             )
         )
 
@@ -41,6 +53,8 @@ class CerebrasAPI:
         input_tokens = usage.prompt_tokens if usage is not None else 0
         output_tokens = usage.completion_tokens if usage is not None else 0
 
+        # Usage fields can be None depending on the API response,
+        # so default to 0 to keep token counts numeric.
         return LLMResponse(
             content=chat_completion.choices[0].message.content,
             input_tokens=input_tokens if input_tokens is not None else 0,
