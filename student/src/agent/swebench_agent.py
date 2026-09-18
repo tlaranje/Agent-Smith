@@ -210,7 +210,9 @@ class SWEBenchAgent:
         self.current_llm_index: int = 0
 
     @staticmethod
-    def _compact_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    def _compact_messages(
+        messages: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
         """Bound request size without losing the task or latest tool result."""
         if not messages:
             return messages

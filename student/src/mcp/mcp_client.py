@@ -94,10 +94,10 @@ class MCPClient:
             if http_cm:
                 await http_cm.__aexit__(None, None, None)
 
-    def _submit(self, coro) -> Any:
+    def _submit(self, coro: Any) -> Any:
         fut: Any = concurrent.futures.Future()
 
-        async def _enqueue():
+        async def _enqueue() -> None:
             await self._queue.put((coro, fut))
 
         asyncio.run_coroutine_threadsafe(_enqueue(), self._loop).result()
@@ -132,7 +132,7 @@ class MCPClient:
     ) -> str:
         assert self._session is not None
         try:
-            uri = uri_template.format(**kwargs)
+            uri: Any = uri_template.format(**kwargs)
         except KeyError as error:
             raise ValueError(
                 f"Missing resource argument: '{error.args[0]}'"
@@ -174,7 +174,7 @@ class MCPClient:
                 parts.append(str(content.uri))
         return "\n".join(parts)
 
-    def call_tool(self, name: str, /, **kwargs: Any) -> str:
+    def call_tool(self, name: str, /, **kwargs: Any) -> Any:
         allowed_tools_name = [t.name for t in self.list_tools()]
         if name not in allowed_tools_name:
             return (
@@ -250,13 +250,13 @@ class MCPClient:
         return {p.name: self._make_prompt_wrapper(p.name) for p in prompts}
 
     def _make_wrapper(self, tool_name: str) -> Callable[..., str]:
-        def wrapper(**kwargs: Any) -> str:
+        def wrapper(**kwargs: Any) -> Any:
             return self.call_tool(tool_name, **kwargs)
         wrapper.__name__ = tool_name
         return wrapper
 
     def _make_resource_wrapper(self, resource_name: str) -> Callable[..., str]:
-        def wrapper(**kwargs: Any) -> str:
+        def wrapper(**kwargs: Any) -> Any:
             return (
                 self._submit(
                     self._read_resource_async(resource_name, **kwargs)
@@ -269,7 +269,7 @@ class MCPClient:
     def _make_resource_template_wrapper(
         self, uri_template: str
     ) -> Callable[..., str]:
-        def wrapper(**kwargs: Any) -> str:
+        def wrapper(**kwargs: Any) -> Any:
             return self._submit(
                 self._read_resource_template_async(uri_template, **kwargs)
             )
@@ -278,14 +278,14 @@ class MCPClient:
         return wrapper
 
     def _make_prompt_wrapper(self, prompt_name: str) -> Callable[..., str]:
-        def wrapper(**kwargs: Any) -> str:
+        def wrapper(**kwargs: Any) -> Any:
             return self._submit(self._get_prompt_async(prompt_name, **kwargs))
 
         wrapper.__name__ = prompt_name
         return wrapper
 
     def close(self) -> None:
-        async def _signal_shutdown():
+        async def _signal_shutdown() -> None:
             await self._queue.put(None)
 
         asyncio.run_coroutine_threadsafe(

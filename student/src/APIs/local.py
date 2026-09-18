@@ -103,6 +103,8 @@ class LocalAPI:
         except Exception:
             GenerationConfig = None
 
+        assert self._tokenizer is not None
+        assert self._generator is not None
         # Tokenize prompt to compute input length and set max_length
         input_ids = self._tokenizer(prompt).get("input_ids", [])
         input_len = len(input_ids)

@@ -94,8 +94,9 @@ class Sandbox:
         ALLOWED_IMPORTS = {'json'}
 
         def _safe_import(
-            name, globals=None, locals=None, fromlist=(), level=0
-        ):
+            name: str, globals: dict | None = None, locals: dict | None = None,
+            fromlist: tuple = (), level: int = 0
+        ) -> Any:
             if name not in ALLOWED_IMPORTS:
                 raise ImportError(
                     f"import of '{name}' is not allowed in the sandbox"
@@ -458,7 +459,7 @@ class Sandbox:
         timeout = self.config.max_execution_time_seconds
         memory_bytes = self.config.max_memory_mb * 1024 * 1024
 
-        def timeout_handler(signum, frame):
+        def timeout_handler(signum: int, frame: Any) -> None:
             raise TimeoutError(
                 f"Execution exceeded {timeout} seconds."
             )
@@ -561,7 +562,7 @@ class Sandbox:
         class _StatementTimeout(Exception):
             """Raised when a single REPL statement exceeds the time limit."""
 
-        def _alarm_handler(signum, frame):
+        def _alarm_handler(signum: int, frame: Any) -> None:
             raise _StatementTimeout(
                 f"Statement exceeded the {statement_timeout}s time limit"
             )

@@ -151,7 +151,9 @@ def get_llms(
             continue
         if env_prefix is None:
             # Keyless provider (local) - instantiate without api_key.
-            ordered_providers[name] = [cls()]
+            ordered_providers[name] = [
+                cls(api_key="", model_name="local/default")
+            ]
             continue
 
         keys = _load_keys(env_prefix)

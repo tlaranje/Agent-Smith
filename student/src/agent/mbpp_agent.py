@@ -266,8 +266,6 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        # run_tests reports stdout in "output"; the evaluator
-                        # needs the executable solution source, not that output.
                         solution=self.clean_solution(code),
                         S_P=prompt,
                         iterations=iteration + 1,
@@ -416,7 +414,9 @@ class MBPPAgent:
         )
         if match:
             fenced_code = match.group(1).strip()
-            if re.search(r"^\s*(?:from\s+\S+\s+import|import\s+\S+|def\s+)", fenced_code):
+            if re.search(
+                r"^\s*(?:from\s+\S+\s+import|import\s+\S+|def\s+)", fenced_code
+            ):
                 return fenced_code
 
         # Anthropic-style <invoke name="tool"><parameter ...>

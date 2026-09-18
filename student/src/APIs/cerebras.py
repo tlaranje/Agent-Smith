@@ -42,7 +42,7 @@ class CerebrasAPI:
             ChatCompletionResponse,
             self.client.chat.completions.create(
                 model=self.model_name,
-                messages=cast(list[dict[str, object]], messages),
+                messages=cast(Any, messages),
                 stream=False,
                 max_tokens=max_output_tokens,
             )
