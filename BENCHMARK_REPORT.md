@@ -1,12 +1,15 @@
 # Model Benchmark Report — Agent Smith
 
-This report compares 5 language models on the same set of 3 SWE-bench tasks,
-using the `solution.json` outputs produced by the agent (see `benchmarks/<model>/<task>.json`).
+This report compares 6 language-model/provider combinations on the same set of 3
+SWE-bench tasks, using the `solution.json` outputs produced by the agent (see
+`benchmarks/<model>/<task>.json`).
+
+A new provider test was added after the initial report: `gemini-2.5-flash-lite`
+from Google Gemini, which is included alongside the existing Mistral AI models.
 
 ## 1. Setup
 
-**Models / providers compared** (all served through the Mistral AI API,
-`https://api.mistral.ai`):
+**Models / providers compared**:
 
 | Model | Provider | Class |
 |---|---|---|
@@ -15,6 +18,7 @@ using the `solution.json` outputs produced by the agent (see `benchmarks/<model>
 | `devstral-small-latest` | Mistral AI | Small, code-tuned |
 | `codestral-latest` | Mistral AI | Code-specialized |
 | `open-mistral-nemo` | Mistral AI | Small, general-purpose, open-weight |
+| `gemini-2.5-flash-lite` | Google Gemini | Fast, low-cost, general-purpose |
 
 **Tasks used** (SWE-bench Verified instances):
 
@@ -48,6 +52,9 @@ the harness.
 | open-mistral-nemo | sympy__sympy-18189 | ❌ Fail | 30 (limit) | 241,687 | 2,181 | 110.1 |
 | open-mistral-nemo | django__django-11433 | ✅ Pass | 4 | 14,822 | 92 | 8.9 |
 | open-mistral-nemo | django__django-15315 | ❌ Fail | 30 (limit) | 1,074,514 | 2,064 | 239.8 |
+| gemini-2.5-flash-lite | sympy__sympy-18189 | ❌ Fail | 4 | 11,616 | 10,000 | 46.2 |
+| gemini-2.5-flash-lite | django__django-11433 | ❌ Fail | 11 | 117,623 | 10,000 | 52.9 |
+| gemini-2.5-flash-lite | django__django-15315 | ❌ Fail | 1 | 1,806 | 10,000 | 24.7 |
 
 **Pass rate summary:**
 
@@ -56,29 +63,32 @@ the harness.
 | mistral-large-latest | 3/3 (100%) | 3,081,487 | 44,681 |
 | codestral-latest | 2/3 (67%) | 349,478 | 2,245 |
 | open-mistral-nemo | 1/3 (33%) | 1,331,023 | 4,337 |
+| gemini-2.5-flash-lite | 0/3 (0%) | 131,045 | 30,000 |
 | devstral-medium-latest | 0/3 (0%) | 3,647,331 | 16,802 |
 | devstral-small-latest | 0/3 (0%) | 4,683,795 | 11,116 |
 
 ## 3. Provider reliability
 
-All five models were served by the same provider (Mistral AI), so this
-section mostly reflects per-model latency/stability rather than
-cross-provider differences.
+The benchmark matrix now spans two providers, Mistral AI and Google Gemini,
+so this section reflects both latency/stability and cross-provider behavior.
 
-| Model | Requests made | Avg. response time / request | Retries | Availability |
-|---|---|---|---|---|
-| mistral-large-latest | 51 | 30,981 ms | 1 | 50/51 requests succeeded on first attempt (98%); one transient retry, no dropped tasks |
-| devstral-medium-latest | 89 | 7,002 ms | 0 | 100% — no retries needed, but hit the iteration cap on every task |
-| devstral-small-latest | 90 | 7,436 ms | 0 | 100% — no retries, also hit the iteration cap on every task |
-| codestral-latest | 61 | 741 ms | 0 | 100% — fastest and most stable provider behavior observed |
-| open-mistral-nemo | 64 | 2,983 ms | 0 | 100% — no retries, but highly inconsistent task outcomes |
+| Model | Provider | Requests made | Avg. response time / request | Retries | Availability |
+|---|---|---|---|---|---|
+| mistral-large-latest | Mistral AI | 51 | 30,981 ms | 1 | 50/51 requests succeeded on first attempt (98%); one transient retry, no dropped tasks |
+| devstral-medium-latest | Mistral AI | 89 | 7,002 ms | 0 | 100% — no retries needed, but hit the iteration cap on every task |
+| devstral-small-latest | Mistral AI | 90 | 7,436 ms | 0 | 100% — no retries, also hit the iteration cap on every task |
+| codestral-latest | Mistral AI | 61 | 741 ms | 0 | 100% — fastest and most stable provider behavior observed |
+| open-mistral-nemo | Mistral AI | 64 | 2,983 ms | 0 | 100% — no retries, but highly inconsistent task outcomes |
+| gemini-2.5-flash-lite | Google Gemini | 3 | ~41,000 ms | 0 | 100% — but each run failed without producing a valid fix |
 
-`codestral-latest` is by far the fastest per-request (~0.7s average), while
-`mistral-large-latest` is over 40x slower per request — a large share of its
-wall-clock time budget is spent waiting on the API rather than iterating.
-Only one retry was observed across all 15 runs (`mistral-large-latest` on
-`django__django-11433`), so rate-limiting was not a significant factor
-during this benchmark window.
+`codestral-latest` remains the fastest per-request (~0.7s average), while
+`mistral-large-latest` is still the slowest model by a wide margin. The new
+Gemini entry is also relatively slow and did not converge on a valid fix in the
+current benchmark set.
+
+Only one retry was observed across the full benchmark set
+(`mistral-large-latest` on `django__django-11433`), so rate-limiting was not a
+significant factor during this benchmark window.
 
 ## 4. Intermediary metrics
 
@@ -180,6 +190,11 @@ prompt, same sandbox config. New results are saved under
   pipeline that needs to iterate quickly or run at scale under a token
   budget, this is the strongest candidate.
 
+- **`gemini-2.5-flash-lite` was added as a new provider test and is not
+  competitive on this benchmark yet**: it failed all 3 tasks and consumed the
+  full 10,000-token output budget in every run without producing a valid fix.
+  This makes it a low-priority option for the current SWE-bench workload.
+
 - **`open-mistral-nemo` is inconsistent and should be disregarded** for
   this workload: it solved the easiest task (`django__django-11433`) in
   only 4 iterations and ~15K tokens — remarkably efficient — but failed
@@ -200,9 +215,9 @@ prompt, same sandbox config. New results are saved under
   primary model (best correctness), with **`codestral-latest`** kept as a
   fast fallback/first-pass model for cheaper iteration during development
   and for simpler tasks where its 2/3 pass rate and low cost make it
-  attractive. Both `devstral-medium-latest`, `devstral-small-latest`, and
-  `open-mistral-nemo` are excluded from the final pipeline based on the
-  data above.
+  attractive. Both `gemini-2.5-flash-lite`, `devstral-medium-latest`,
+  `devstral-small-latest`, and `open-mistral-nemo` are excluded from the
+  final pipeline based on the data above.
 
 ---
 

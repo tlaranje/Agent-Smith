@@ -1,10 +1,12 @@
 # ABOUTME: SWE-bench instance management, Docker container lifecycle, and patch evaluation.
 # ABOUTME: Provides InteractSweBench class as Fire CLI for listing/inspecting/evaluating SWE-bench tasks.
 import json
+import io
 import platform
 import random
 import subprocess
 import sys
+import tarfile
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Union
@@ -47,7 +49,7 @@ EXAM_POOL = SEED_POOL + [
 ]
 
 from swebench.harness.test_spec.test_spec import make_test_spec
-from swebench.harness.docker_utils import copy_to_container, exec_run_with_timeout
+from swebench.harness.docker_utils import exec_run_with_timeout
 from swebench.harness.constants import (
     DOCKER_PATCH,
     DOCKER_WORKDIR,
@@ -70,6 +72,24 @@ import docker
 
 DEFAULT_DATASET = "SWE-bench/SWE-bench_Verified"
 DEFAULT_SPLIT = "test"
+
+
+def copy_text_to_container(container, text: str, destination: Path) -> None:
+    """Copy text without propagating host ownership into rootless Docker."""
+    archive = io.BytesIO()
+    member = tarfile.TarInfo(destination.name)
+    encoded = text.encode()
+    member.size = len(encoded)
+    member.mode = 0o644
+    member.uid = 0
+    member.gid = 0
+    member.uname = "root"
+    member.gname = "root"
+
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        tar.addfile(member, io.BytesIO(encoded))
+
+    container.put_archive(str(destination.parent), archive.getvalue())
 
 
 class InteractSweBench:
@@ -424,9 +444,7 @@ class InteractSweBench:
 
         # 3. Apply patch if provided
         if patch:
-            patch_file = Path("/tmp/patch.diff")
-            patch_file.write_text(patch)
-            copy_to_container(container, patch_file, Path(DOCKER_PATCH))
+            copy_text_to_container(container, patch, Path(DOCKER_PATCH))
             # Try to apply patch
             GIT_APPLY_CMDS = [
                 "git apply --verbose",
@@ -450,9 +468,7 @@ class InteractSweBench:
         # 4. Copy script into container and execute
         test_spec = self._get_test_spec(instance_id, dataset, split)
         try:
-            tmp = Path("/tmp/eval.sh")
-            tmp.write_text(eval_script)
-            copy_to_container(container, tmp, Path("/eval.sh"))
+            copy_text_to_container(container, eval_script, Path("/eval.sh"))
             container.exec_run("chmod +x /eval.sh")
             out, timed_out, runtime = exec_run_with_timeout(container, "/bin/bash /eval.sh", timeout)
             print(out)
@@ -511,4 +527,3 @@ def _fire_main():
     """Entry point for moulinette_swebench CLI."""
     import fire
     fire.Fire(InteractSweBench)
-

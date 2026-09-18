@@ -15,63 +15,27 @@ YELLOW = "\033[93m"
 END = "\033[0m"
 
 SYSTEM_PROMPT = """
-You are an expert software engineer fixing bugs in existing Python
-projects.
+You are an expert software engineer fixing the reported bug in the Python
+repository at /testbed. Use the available tools as Python functions.
 
-The repository is already available at /testbed.
-
-The available sandbox tools are documented below.
-
-Use the tools as normal Python functions.
-
-Use this response structure for every step:
-Thought: briefly state the next investigation or fix.
-Code:
-```python
-result = read_file(filepath="/testbed/path/to/file.py")
-```
-Observation: wait for the real sandbox/tool result before continuing.
-
-Effective loop example:
-1. Inspect the relevant files with read_file or search_code.
-2. Edit the smallest necessary region with edit_file.
-3. Run run_tests() and use its output to guide any correction.
-4. Call final_answer(get_patch()) only after the evaluation passes.
-
-Requirements:
-
-- Understand the reported issue before editing code.
-- Gather enough context before making changes.
-- Make the smallest correct fix.
-- Preserve the existing code style.
-- Do not modify unrelated code.
-- Run tests before finishing whenever appropriate.
-- When the fix is complete, call final_answer().
-- Every response must contain exactly one fenced ```python code block with a
-  single tool call. Do not respond with plain prose only.
-- Before calling final_answer(), you MUST have called run_tests() at least once
-  and confirmed the relevant tests pass. Never claim
-  success without running tests.
-- Stay focused on the file(s) directly related to
-  the issue. If you find yourself
-  editing unrelated files, stop and reconsider whether you are still solving
-  the original problem.
-- If edit_file fails because old_str was not found, do not guess
-  again or move on to something else: call read_file on the exact
-  region first to see the precise text (including indentation, line
-  breaks, and surrounding characters), then retry edit_file with an
-  old_str copied verbatim from that output.
-- old_str must match a single contiguous snippet of the file exactly,
-  character for character. Never split it across a comma, a paren, or
-  a line break that isn't actually in the source.
-- Return only one tool invocation at a time.
-- Do not explain your reasoning.
+Rules:
+- Inspect only relevant files and make the smallest correct fix.
+- Preserve existing style and do not modify unrelated code.
+- Return exactly one fenced ```python block containing one tool call per turn.
+- Do not explain your reasoning or write prose outside the tool call.
+- Before final_answer(), call run_tests() and verify the result.
+- Call final_answer() immediately after the relevant tests pass.
+- If edit_file reports that old_str was not found, read that exact region and
+  retry with a verbatim contiguous snippet. Do not guess.
 """
 
 MAX_SWEBENCH_ITERATIONS = 30
 MAX_SWEBENCH_INPUT_TOKENS = 300_000
 MAX_SWEBENCH_OUTPUT_TOKENS = 10_000
 MAX_SWEBENCH_TIME_SECONDS = 900.0
+MAX_SWEBENCH_REQUEST_OUTPUT_TOKENS = 1_200
+MAX_SWEBENCH_CONTEXT_CHARS = 80_000
+MAX_SWEBENCH_TOOL_OUTPUT_CHARS = 12_000
 
 
 def short_error(e: Exception, max_len: int = 150) -> str:
@@ -91,6 +55,19 @@ def short_error(e: Exception, max_len: int = 150) -> str:
         msg = msg[:max_len].rstrip() + "..."
 
     return msg.strip()
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Keep tool feedback bounded while retaining its beginning and end."""
+    if len(text) <= limit:
+        return text
+    marker = "\n...[output truncated]...\n"
+    if limit <= len(marker):
+        return text[:limit]
+    available = limit - len(marker)
+    head = available * 2 // 3
+    tail = available - head
+    return f"{text[:head]}{marker}{text[-tail:]}"
 
 
 class StepMetrics(BaseModel):
@@ -232,6 +209,33 @@ class SWEBenchAgent:
         self.llm: Any = self.llms[0]
         self.current_llm_index: int = 0
 
+    @staticmethod
+    def _compact_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Bound request size without losing the task or latest tool result."""
+        if not messages:
+            return messages
+
+        first = messages[0]
+        first_content = _truncate(
+            str(first.get("content", "")),
+            MAX_SWEBENCH_CONTEXT_CHARS // 2,
+        )
+        compacted = [{**first, "content": first_content}]
+        remaining = MAX_SWEBENCH_CONTEXT_CHARS - len(first_content)
+
+        tail: list[dict[str, str]] = []
+        for message in reversed(messages[1:]):
+            content = str(message.get("content", ""))
+            if remaining <= 0:
+                break
+            if len(content) > remaining:
+                content = content[-remaining:]
+            tail.append({**message, "content": content})
+            remaining -= len(content)
+
+        compacted.extend(reversed(tail))
+        return compacted
+
     def chose_llm(self) -> None:
         """
         Switch to the next available LLM client.
@@ -325,10 +329,14 @@ class SWEBenchAgent:
                     try:
                         request_start = time.time()
                         remaining_output = (
-                            MAX_SWEBENCH_OUTPUT_TOKENS - total_output_tokens
+                            min(
+                                MAX_SWEBENCH_REQUEST_OUTPUT_TOKENS,
+                                MAX_SWEBENCH_OUTPUT_TOKENS
+                                - total_output_tokens,
+                            )
                         )
                         response = self.llm.generate_messages(
-                            messages,
+                            self._compact_messages(messages),
                             max_output_tokens=remaining_output,
                         )
                         request_time_ms = (time.time() - request_start) * 1000
@@ -445,6 +453,9 @@ class SWEBenchAgent:
                             f"[MALFORMED RESPONSE INTERPRETED] {parse_note}"
                             f"\n\n{tool_output}"
                         )
+                    tool_output = _truncate(
+                        tool_output, MAX_SWEBENCH_TOOL_OUTPUT_CHARS
+                    )
 
                 steps.append(StepMetrics(
                     step=iteration + 1,
