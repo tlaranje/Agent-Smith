@@ -4,6 +4,7 @@ from ..parser import MBPPTaskInput
 import xml.etree.ElementTree as ET
 from ..sandbox import Sandbox
 from datetime import datetime
+import ast
 import json
 import time
 import sys
@@ -13,14 +14,28 @@ RED = "\033[91m"
 YELLOW = "\033[93m"
 END = "\033[0m"
 
-S_P = """Solve the MBPP task with the exact requested
-function signature. Return only short executable Python code: no
-explanation, docstring, repeated tests, or alternative solutions.
-After the implementation passes, call
-final_answer("<the clean function code>")."""
+SYSTEM_PROMPT = """Solve the MBPP task with the exact requested function
+signature.
+
+Guidelines:
+1. Always test edge cases (e.g., input types like int vs str, negative values,
+empty/small inputs).
+2. Ensure strict logical correctness for the entire problem description, not
+just the provided examples.
+3. Write short, executable Python code with no explanations, docstrings, or
+markdown boilerplate.
+4. Treat the provided `assert` tests as authoritative when wording and tests
+   differ, including exact boundary conditions and expected values.
+5. Preserve the input values in the returned result unless the assertions
+   explicitly require normalization or mutation.
+6. Execute and verify the code against the provided `assert` tests
+(and any edge cases you design) in the environment FIRST.
+7. Only call `final_answer("<the clean function code>")` AFTER you have
+verified that all test cases pass cleanly without any runtime or logic errors.
+"""
 
 MAX_MBPP_OUTPUT_TOKENS = 1500
-MAX_RESPONSE_TOKENS = 700
+MAX_RESPONSE_TOKENS = 350
 
 
 def short_error(e: Exception, max_len: int = 150) -> str:
@@ -251,7 +266,9 @@ class MBPPAgent:
                         task_id=str(task.task_id),
                         benchmark="mbpp",
                         success=True,
-                        solution=str(test_result.get("output") or code),
+                        # run_tests reports stdout in "output"; the evaluator
+                        # needs the executable solution source, not that output.
+                        solution=self.clean_solution(code),
                         S_P=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
@@ -269,7 +286,10 @@ class MBPPAgent:
                         f"Signature: {task.function_definition}\n"
                         f"Previous code:\n{code}\n"
                         f"Latest result:\n{sandbox_output}\n"
-                        "Return only the corrected code."
+                        "The assertion output is authoritative. Correct the "
+                        "implementation, especially boundary conditions, and "
+                        "return only the corrected code. Do not repeat code "
+                        "that produced the same failure."
                     ),
                 }]
         except Exception as e:
@@ -324,11 +344,35 @@ class MBPPAgent:
         )
 
     @staticmethod
+    def clean_solution(code: str) -> str:
+        """Remove model-added tests and final_answer calls from submission."""
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return code.strip()
+
+        kept = []
+        for node in tree.body:
+            if isinstance(node, ast.Assert):
+                continue
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "final_answer"
+            ):
+                continue
+            kept.append(node)
+
+        tree.body = kept
+        return ast.unparse(tree).strip()
+
+    @staticmethod
     def build_prompt(task: MBPPTaskInput, manual: str) -> str:
         task_data = task.model_dump()
 
         lines = [
-            S_P,
+            SYSTEM_PROMPT,
             "",
             manual,
             "",
@@ -363,12 +407,17 @@ class MBPPAgent:
         Returns:
             A string of Python code ready to run in the sandbox.
         """
-        # Preferred format: a fenced ```python``` code block.
+        # Preferred format: a fenced ```python``` code block. Accept an
+        # unterminated fence because some providers truncate long responses.
         match = re.search(
-            r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE
+            r"```(?:python)?\s*\n(.*?)(?:```|$)",
+            text,
+            re.DOTALL | re.IGNORECASE,
         )
         if match:
-            return match.group(1).strip()
+            fenced_code = match.group(1).strip()
+            if re.search(r"^\s*(?:from\s+\S+\s+import|import\s+\S+|def\s+)", fenced_code):
+                return fenced_code
 
         # Anthropic-style <invoke name="tool"><parameter ...>
         # tool-call format.
@@ -432,5 +481,17 @@ class MBPPAgent:
                 return f"result = {tool}({params})"
         except ET.ParseError:
             pass
+
+        # Some models prepend explanations without using a code fence. Keep
+        # only the function and its indented body instead of sending prose to
+        # the sandbox as Python source.
+        function_match = re.search(
+            r"(?ms)^(def\s+\w+\s*\([^)]*\)\s*:[^\n]*\n"
+            r"(?:^[ \t]+.*(?:\n|$))*)",
+            text,
+        )
+        if function_match:
+            extracted = function_match.group(1).strip()
+            return extracted.split("\n```", 1)[0].strip()
 
         return text.strip()

@@ -14,7 +14,7 @@ RED = "\033[91m"
 YELLOW = "\033[93m"
 END = "\033[0m"
 
-S_P = """
+SYSTEM_PROMPT = """
 You are an expert software engineer fixing bugs in existing Python
 projects.
 
@@ -194,7 +194,7 @@ class SolutionOutput(BaseModel):
         default_factory=list,
         description="Per-step metrics, one entry per agent iteration"
     )
-    S_P: str = Field(
+    s_prompt: str = Field(
         default="",
         description=(
             "Full system prompt sent to the LLM (for provenance checking)"
@@ -288,7 +288,7 @@ class SWEBenchAgent:
                         benchmark="swebench",
                         success=False,
                         solution=self.sandbox.get_patch(),
-                        S_P=prompt,
+                        s_prompt=prompt,
                         iterations=iteration,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -307,7 +307,7 @@ class SWEBenchAgent:
                         benchmark="swebench",
                         success=False,
                         solution=self.sandbox.get_patch(),
-                        S_P=prompt,
+                        s_prompt=prompt,
                         iterations=iteration,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -419,7 +419,7 @@ class SWEBenchAgent:
                         benchmark="swebench",
                         success=bool(patch.strip()),
                         solution=patch,
-                        S_P=prompt,
+                        s_prompt=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -474,7 +474,7 @@ class SWEBenchAgent:
             benchmark="swebench",
             success=False,
             solution=patch,
-            S_P=prompt,
+            s_prompt=prompt,
             iterations=self.max_iterations,
             total_requests=total_requests,
             total_input_tokens=total_input_tokens,
@@ -487,13 +487,13 @@ class SWEBenchAgent:
     @staticmethod
     def build_initial_prompt(task: SWEBenchTaskInput, manual: str) -> str:
         testbed_path = os.environ.get("TESTBED_PATH", "/testbed")
-        S_P = (
-            S_P
+        s_prompt = (
+            SYSTEM_PROMPT
             if testbed_path == "/testbed"
-            else S_P.replace("/testbed", testbed_path)
+            else SYSTEM_PROMPT.replace("/testbed", testbed_path)
         )
         return (
-            f"{S_P}\n\n"
+            f"{s_prompt}\n\n"
             f"{manual}\n\n"
             "## Task\n"
             f"Repository: {task.repo}\n"
