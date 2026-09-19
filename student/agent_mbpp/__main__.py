@@ -57,7 +57,7 @@ def main() -> None:
             "benchmark": "mbpp",
             "success": False,
             "solution": "",
-            "S_P": "",
+            "system_prompt": "",
             "iterations": 0,
             "total_requests": 0,
             "total_input_tokens": 0,

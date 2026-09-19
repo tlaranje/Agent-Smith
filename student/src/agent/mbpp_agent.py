@@ -78,7 +78,7 @@ class SolutionOutput(BaseModel):
     benchmark: str
     success: bool
     solution: str
-    S_P: str
+    system_prompt: str
     iterations: int
     total_requests: int
     total_input_tokens: int
@@ -195,7 +195,7 @@ class MBPPAgent:
                                 benchmark="mbpp",
                                 success=False,
                                 solution="",
-                                S_P=prompt,
+                                system_prompt=prompt,
                                 iterations=iteration,
                                 total_requests=total_requests,
                                 total_input_tokens=total_input_tokens,
@@ -267,7 +267,7 @@ class MBPPAgent:
                         benchmark="mbpp",
                         success=True,
                         solution=self.clean_solution(code),
-                        S_P=prompt,
+                        system_prompt=prompt,
                         iterations=iteration + 1,
                         total_requests=total_requests,
                         total_input_tokens=total_input_tokens,
@@ -301,7 +301,7 @@ class MBPPAgent:
                 benchmark="mbpp",
                 success=False,
                 solution="",
-                S_P=prompt if 'prompt' in locals() else "",
+                system_prompt=prompt if 'prompt' in locals() else "",
                 iterations=iteration if 'iteration' in locals() else 0,
                 total_requests=total_requests,
                 total_input_tokens=total_input_tokens,
@@ -321,7 +321,7 @@ class MBPPAgent:
             benchmark="mbpp",
             success=False,
             solution="",
-            S_P=prompt,
+            system_prompt=prompt,
             iterations=self.max_iterations,
             total_requests=total_requests,
             total_input_tokens=total_input_tokens,
