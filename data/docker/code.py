@@ -4,12 +4,15 @@ def final_answer(answer_string):
     with open('/tmp/agent/final_result.py', 'w', encoding='utf-8') as _f:
         _f.write(answer_string)
 
-
-def add(a, b):
-    return a + b
-
+def find_lists(Input):
+    count = 0
+    if isinstance(Input, list):
+        return 1
+    for item in Input:
+        if isinstance(item, list):
+            count += 1
+    return count
 
 # --- AUTOMATED TESTS ---
-assert add(1, 2) == 3
-assert add(0, 0) == 0
-assert add(-1, 1) == 0
+assert find_lists(([1, 2], [3, 4], [5, 6]))  == 3
+assert find_lists(([9, 8, 7, 6, 5, 4, 3, 2, 1])) == 1
