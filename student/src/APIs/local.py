@@ -29,9 +29,9 @@ class LocalAPI:
         self.model_path = os.path.join(base, name)
 
         # Lazy-loaded resources
-        self._tokenizer = None
-        self._model = None
-        self._generator = None
+        self._tokenizer: Any = None
+        self._model: Any = None
+        self._generator: Any = None
 
     def _ensure_loaded(self) -> None:
         if self._generator is not None:
@@ -98,10 +98,12 @@ class LocalAPI:
         # explicit arguments. Compute a safe `max_length` so the
         # model's `max_length` from disk does not conflict with
         # `max_new_tokens`.
+        generation_config: Any = None
         try:
             from transformers import GenerationConfig
+            generation_config = GenerationConfig
         except Exception:
-            GenerationConfig = None
+            pass
 
         assert self._tokenizer is not None
         assert self._generator is not None
@@ -109,8 +111,8 @@ class LocalAPI:
         input_ids = self._tokenizer(prompt).get("input_ids", [])
         input_len = len(input_ids)
 
-        if GenerationConfig is not None:
-            gen_conf = GenerationConfig(
+        if generation_config is not None:
+            gen_conf = generation_config(
                 max_new_tokens=max_output_tokens,
                 do_sample=False,
                 num_return_sequences=1,
