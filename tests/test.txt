@@ -60,3 +60,5 @@ before spinning up heavy testing pipelines:
 
 # Check HTTP Server status
 $ curl -I http://localhost:8000/
+
+env -u FAKEROOTKEY -u FAKEROOTDONTTRY DOCKER_HOST=unix:///run/user/103170/docker.sock fakeroot -- ./data/exams/exam_swebench.sh --student-path ./student --moulinette-path ./data/moulinette --env-file .env
